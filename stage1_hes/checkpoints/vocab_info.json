@@ -1,0 +1,15 @@
+{
+  "num_motif_ids": 7370,
+  "num_shape_ids": 346,
+  "embedding_dim": 256,
+  "properties": [
+    "logP",
+    "qed",
+    "SAS",
+    "docking_parp1",
+    "docking_fa7",
+    "docking_5ht1b",
+    "docking_braf",
+    "docking_jak2"
+  ]
+}

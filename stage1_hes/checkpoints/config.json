@@ -1,0 +1,30 @@
+{
+  "embedding_dim": 256,
+  "num_mpn_layers": 3,
+  "mpn_hidden_dim": 256,
+  "dropout": 0.1,
+  "num_motif_ids": 7370,
+  "num_shape_ids": 346,
+  "atom_feature_dim": 15,
+  "scaffold_node_feature_dim": 16,
+  "batch_size": 128,
+  "learning_rate": 0.0003,
+  "weight_decay": 1e-05,
+  "loss_weights": {
+    "lambda_local_g": 1.0,
+    "lambda_global": 0.8,
+    "lambda_sc_g": 1.0,
+    "lambda_local_sc": 0.8,
+    "gamma_prop": 0.5
+  },
+  "properties": [
+    "logP",
+    "qed",
+    "SAS",
+    "docking_parp1",
+    "docking_fa7",
+    "docking_5ht1b",
+    "docking_braf",
+    "docking_jak2"
+  ]
+}
