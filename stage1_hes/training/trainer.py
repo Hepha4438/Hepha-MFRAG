@@ -211,13 +211,10 @@ class HESTrainer:
                     batch_sc=batch_sc,
                 )
                 
-                # Normalize properties for contrastive loss (use global StandardScaler)
-                if self.scaler_fitted:
-                    props_normalized = torch.from_numpy(
-                        self.property_scaler.transform(batch.y.cpu().numpy())
-                    ).to(batch.y.device).float()
-                else:
-                    props_normalized = normalize_properties(batch.y)
+                # Normalize properties using global StandardScaler
+                props_normalized = torch.from_numpy(
+                    self.property_scaler.transform(batch.y.cpu().numpy())
+                ).to(batch.y.device).float()
                 
                 # Compute loss
                 losses = self.loss_fn(
@@ -339,13 +336,10 @@ class HESTrainer:
                     batch_sc=batch_sc,
                 )
                 
-                # Normalize properties (use global StandardScaler)
-                if self.scaler_fitted:
-                    props_normalized = torch.from_numpy(
-                        self.property_scaler.transform(batch.y.cpu().numpy())
-                    ).to(batch.y.device).float()
-                else:
-                    props_normalized = normalize_properties(batch.y)
+                # Normalize properties using global StandardScaler
+                props_normalized = torch.from_numpy(
+                    self.property_scaler.transform(batch.y.cpu().numpy())
+                ).to(batch.y.device).float()
                 
                 # Compute loss
                 losses = self.loss_fn(
