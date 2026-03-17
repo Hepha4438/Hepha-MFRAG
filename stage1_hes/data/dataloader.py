@@ -215,11 +215,10 @@ class HESDataLoader:
         
         data_list = []
         
-        # For faster testing, use only first 1000
-        limit = min(1000, len(graph_files))
-        print(f"[DataCreation] Loading first {limit} molecules for testing...")
+        # Load all available graphs
+        print(f"[DataCreation] Loading all {len(graph_files)} molecules...")
         
-        for idx, graph_path in enumerate(graph_files[:limit]):
+        for idx, graph_path in enumerate(graph_files):
             try:
                 # Load graph
                 data_g = torch.load(graph_path, weights_only=False)
