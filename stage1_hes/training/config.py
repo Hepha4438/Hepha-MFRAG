@@ -49,7 +49,7 @@ SCAFFOLD_NODE_FEATURE_DIM = ATOM_FEATURE_DIM + NULL_NODE_FLAG_DIM
 # TRAINING HYPERPARAMETERS
 # ============================================================================
 BATCH_SIZE = 128
-NUM_EPOCHS = 100
+NUM_EPOCHS = 200
 LEARNING_RATE = 3e-4
 WEIGHT_DECAY = 1e-5
 GRADIENT_CLIP = 1.0
@@ -90,7 +90,7 @@ NUM_PROPERTIES = len(PROPERTIES)
 # ============================================================================
 CHECKPOINT_INTERVAL = 5  # Save checkpoint every N epochs
 EVAL_INTERVAL = 1        # Evaluate every N epochs
-PATIENCE = 20            # Early stopping patience (epochs without improvement)
+PATIENCE = 40            # Early stopping patience (epochs without improvement)
 SEED = 42
 
 # ============================================================================

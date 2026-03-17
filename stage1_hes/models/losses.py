@@ -237,50 +237,40 @@ class HESLoss(nn.Module):
         losses = {}
         
         # ====================================================================
-        # L_local,G: Alignment between Emb_G_frag and Emb_motif
+        # L_local,G: || Emb_G_mole - sum(Emb_G_frag per batch) ||^2
         # ====================================================================
-        # Group fragment embeddings by batch
-        l_local_g = self._compute_fragment_alignment(
-            emb_g_frag, emb_motif, batch_g, batch_sc
+        # Align molecular embedding with sum of atomic fragment embeddings
+        l_local_g = self._compute_local_g_alignment(
+            emb_g_mole, emb_g_frag, batch_g
         )
         losses["l_local_g"] = l_local_g
         
         # ====================================================================
-        # L_global: Contrastive loss between Emb_G_mole and Emb_Sc_mole
+        # L_global: Contrastive loss based on property similarity
+        # Positive pairs: (G_mole[i], Sc_mole[i]) - same molecule
+        # Negative pairs: (G_mole[i], Sc_mole[j≠i]) - different molecules
         # ====================================================================
-        # Combine embeddings and properties for contrastive loss
-        combined_mole_emb = torch.cat([emb_g_mole, emb_sc_mole], dim=0)  # [2*B, d]
-        
-        if properties is not None:
-            # Use properties for positive pair definition
-            combined_props = torch.cat([properties, properties], dim=0)  # [2*B, num_props]
-            l_global = self.contrastive_loss(combined_mole_emb, combined_props)
-        else:
-            # Fallback: use property predictions
-            combined_props = torch.cat([prop_pred, prop_pred], dim=0)
-            l_global = self.contrastive_loss(combined_mole_emb, combined_props)
-        
+        # Create positive pair mask: same molecule = positive
+        # Anchor: G_mole, Positive: Sc_mole of same molecule, Negative: Sc_mole of different molecules
+        l_global = self._compute_global_contrastive(
+            emb_g_mole, emb_sc_mole, properties if properties is not None else prop_pred
+        )
         losses["l_global"] = l_global
         
         # ====================================================================
-        # L_Sc,G: Alignment between Emb_Sc_shape and Emb_shape
+        # L_Sc,G: || Emb_Sc_mole - Emb_G_mole ||^2
+        # Align scaffold-level molecular embedding with atomic-level molecular embedding
         # ====================================================================
-        l_sc_g = self.alignment_loss(emb_sc_shape, emb_shape)
+        l_sc_g = self.alignment_loss(emb_sc_mole, emb_g_mole)
         losses["l_sc_g"] = l_sc_g
         
         # ====================================================================
-        # L_local,Sc: Contrastive loss between Emb_Sc_mole and Emb_G_mole
+        # L_local,Sc: || Emb_Sc_mole - sum(Emb_Sc_shape per batch) ||^2
+        # Align scaffold molecular embedding with sum of scaffold shape embeddings
         # ====================================================================
-        # Create positive pairs: molecules with similar properties
-        if properties is not None:
-            combined_all_emb = torch.cat([emb_g_mole, emb_sc_mole], dim=0)  # [2*B, d]
-            combined_all_props = torch.cat([properties, properties], dim=0)  # [2*B, num_props]
-            l_local_sc = self.contrastive_loss(combined_all_emb, combined_all_props)
-        else:
-            combined_all_emb = torch.cat([emb_g_mole, emb_sc_mole], dim=0)
-            combined_all_props = torch.cat([prop_pred, prop_pred], dim=0)
-            l_local_sc = self.contrastive_loss(combined_all_emb, combined_all_props)
-        
+        l_local_sc = self._compute_local_sc_alignment(
+            emb_sc_mole, emb_sc_shape, batch_sc
+        )
         losses["l_local_sc"] = l_local_sc
         
         # ====================================================================
@@ -303,39 +293,141 @@ class HESLoss(nn.Module):
         
         return losses
     
-    def _compute_fragment_alignment(
+    def _compute_local_g_alignment(
         self,
-        emb_g_frag: torch.Tensor,  # [N_atoms, d]
-        emb_motif: torch.Tensor,  # [N_motifs, d]
-        batch_g: torch.Tensor,  # [N_atoms]
-        batch_sc: torch.Tensor,  # [N_motifs]
+        emb_g_mole: torch.Tensor,  # [B, d] - molecular level
+        emb_g_frag: torch.Tensor,  # [N_atoms, d] - fragment (atomic) level
+        batch_g: torch.Tensor,  # [N_atoms] - batch assignment for atoms
     ) -> torch.Tensor:
         """
-        Compute alignment loss between fragment and motif embeddings.
+        Compute L_local,G: || Emb_G_mole[i] - sum(Emb_G_frag[i]) ||^2
         
-        Since fragments are atoms and motifs are higher-level, we aggregate
-        fragment embeddings within each motif's structural context.
+        Aligns molecular-level embedding with sum of all atomic fragment embeddings.
         
-        Simplified approach: align mean(emb_g_frag per batch) with mean(emb_motif per batch)
+        Args:
+            emb_g_mole: [B, d] molecular embeddings
+            emb_g_frag: [N_atoms, d] atomic fragment embeddings
+            batch_g: [N_atoms] batch assignment
+        
+        Returns:
+            Scalar loss
         """
-        # Aggregate embeddings per batch
-        batch_size = batch_g.max().item() + 1
+        batch_size = batch_g.max().item() + 1 if batch_g.numel() > 0 else 1
         
-        loss = 0
+        loss = 0.0
         for b in range(batch_size):
-            # Get embeddings for this batch
-            frag_mask = batch_g == b
-            motif_mask = batch_sc == b
-            
-            if frag_mask.sum() > 0 and motif_mask.sum() > 0:
-                # Compute mean embeddings
-                emb_g_frag_mean = emb_g_frag[frag_mask].mean(dim=0, keepdim=True)
-                emb_motif_mean = emb_motif[motif_mask].mean(dim=0, keepdim=True)
+            # Get fragment embeddings for this batch
+            mask = batch_g == b
+            if mask.sum() > 0:
+                # Sum fragments for this molecule
+                emb_g_frag_sum = emb_g_frag[mask].sum(dim=0, keepdim=True)
                 
-                # Alignment loss
-                loss += torch.norm(emb_g_frag_mean - emb_motif_mean, p=2)
+                # Alignment loss with molecular embedding
+                # L2 distance squared
+                loss += torch.norm(emb_g_mole[b:b+1] - emb_g_frag_sum, p=2) ** 2
         
-        loss = loss / batch_size if batch_size > 0 else torch.tensor(0.0, device=emb_g_frag.device)
+        loss = loss / batch_size if batch_size > 0 else torch.tensor(0.0, device=emb_g_mole.device)
+        
+        return loss
+    
+    def _compute_local_sc_alignment(
+        self,
+        emb_sc_mole: torch.Tensor,  # [B, d] - molecular level
+        emb_sc_shape: torch.Tensor,  # [N_shapes, d] - shape (motif) level
+        batch_sc: torch.Tensor,  # [N_shapes] - batch assignment for shapes
+    ) -> torch.Tensor:
+        """
+        Compute L_local,Sc: || Emb_Sc_mole[i] - sum(Emb_Sc_shape[i]) ||^2
+        
+        Aligns scaffold molecular-level embedding with sum of all shape embeddings.
+        
+        Args:
+            emb_sc_mole: [B, d] molecular embeddings from scaffold
+            emb_sc_shape: [N_shapes, d] shape embeddings
+            batch_sc: [N_shapes] batch assignment
+        
+        Returns:
+            Scalar loss
+        """
+        batch_size = batch_sc.max().item() + 1 if batch_sc.numel() > 0 else 1
+        
+        loss = 0.0
+        for b in range(batch_size):
+            # Get shape embeddings for this batch
+            mask = batch_sc == b
+            if mask.sum() > 0:
+                # Sum shapes for this molecule
+                emb_sc_shape_sum = emb_sc_shape[mask].sum(dim=0, keepdim=True)
+                
+                # Alignment loss with molecular embedding
+                # L2 distance squared
+                loss += torch.norm(emb_sc_mole[b:b+1] - emb_sc_shape_sum, p=2) ** 2
+        
+        loss = loss / batch_size if batch_size > 0 else torch.tensor(0.0, device=emb_sc_mole.device)
+        
+        return loss
+    
+    def _compute_global_contrastive(
+        self,
+        emb_g_mole: torch.Tensor,  # [B, d] - anchor from atomic graph
+        emb_sc_mole: torch.Tensor,  # [B, d] - from scaffold graph
+        properties: torch.Tensor,  # [B, num_props] - for defining positive/negative pairs (only for G)
+    ) -> torch.Tensor:
+        """
+        Compute L_global: Supervised contrastive loss between G_mole and Sc_mole.
+        
+        NOTE: Sc does NOT have properties, only G has properties.
+        
+        Positive pairs:
+        1. (G[i], Sc[i]) - same molecule (scaffold of G[i] is Sc[i])
+        2. (G[i], G[j]) - if |Y[i] - Y[j]| < ε (similar properties)
+        
+        Negative pairs: All other pairs
+        
+        Args:
+            emb_g_mole: [B, d] molecular embeddings from atomic graph (with properties)
+            emb_sc_mole: [B, d] molecular embeddings from scaffold graph (no properties)
+            properties: [B, num_props] properties for G molecules only
+        
+        Returns:
+            Scalar loss
+        """
+        B = emb_g_mole.shape[0]
+        
+        # Concatenate embeddings: [G_mole, Sc_mole] → [2B, d]
+        # Indices 0 to B-1: G embeddings
+        # Indices B to 2B-1: Sc embeddings
+        embeddings = torch.cat([emb_g_mole, emb_sc_mole], dim=0)
+        
+        # Create positive pair mask manually
+        positive_mask = torch.zeros(2*B, 2*B, dtype=torch.float32, device=embeddings.device)
+        
+        # ====================================================================
+        # 1. (G[i], Sc[i]) pairs - same molecule
+        # ====================================================================
+        for i in range(B):
+            positive_mask[i, B + i] = 1      # G[i] <-> Sc[i]
+            positive_mask[B + i, i] = 1      # Sc[i] <-> G[i]
+        
+        # ====================================================================
+        # 2. (G[i], G[j]) pairs - similar properties |Y[i] - Y[j]| < epsilon
+        # ====================================================================
+        if properties is not None:
+            epsilon = self.contrastive_loss.epsilon  # Property similarity threshold
+            for i in range(B):
+                for j in range(B):
+                    if i != j:
+                        # L2 distance between property vectors
+                        prop_dist = torch.norm(properties[i] - properties[j], p=2)
+                        if prop_dist < epsilon:
+                            positive_mask[i, j] = 1
+                            positive_mask[j, i] = 1
+        
+        # Apply supervised contrastive loss with manual mask
+        # Expand properties to [2B, num_props] for consistency
+        # (Sc properties don't matter since mask is pre-defined)
+        properties_expanded = properties.repeat(2, 1) if properties is not None else None
+        loss = self.contrastive_loss(embeddings, properties_expanded, mask=positive_mask)
         
         return loss
 
