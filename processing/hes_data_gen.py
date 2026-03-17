@@ -201,6 +201,12 @@ def main():
     )
     
     print(f"  ✓ Created HES dataset with {len(hes_dataset)} molecules")
+
+    # Save per-sample preprocessed data for Stage 1 dataloader
+    data_list_path = config.output_dir / "hes_data_list.pkl"
+    with open(data_list_path, 'wb') as f:
+        pickle.dump(data_list, f)
+    print(f"  Per-sample HES data saved to: {data_list_path}")
     
     # Compute and display statistics
     print(f"\n{'='*80}")
@@ -229,6 +235,7 @@ def main():
         'num_shapes': vocab_stats['num_shapes'],
         'success_count': success_count,
         'failed_count': failed_count,
+        'data_list_file': 'hes_data_list.pkl',
     }
     
     metadata_path = config.output_dir / "hes_dataset_metadata.pkl"
