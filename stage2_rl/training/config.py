@@ -92,9 +92,9 @@ MAX_STEPS_PER_EPISODE = 20      # Usually ends earlier due to STOP action
 NUM_UPDATES_PER_STEP = 1        # SAC updates per environment step
 
 # Evaluation
-EVAL_INTERVAL = 1000              # Evaluate every N episodes
-NUM_EVAL_EPISODES = 10            # Number of episodes for evaluation
-SAVE_INTERVAL = 400              # Save checkpoint every N episodes
+EVAL_INTERVAL = 250              # Evaluate every N episodes
+NUM_EVAL_EPISODES = 20            # Number of episodes for evaluation
+SAVE_INTERVAL = 500              # Save checkpoint every N episodes
 
 # ===== Reward Configuration =====
 # Potential-based reward shaping
