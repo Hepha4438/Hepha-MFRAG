@@ -97,15 +97,27 @@ def initialize_training(hes_model, motif_vocab, shape_vocab, property_scaler):
     # Initialize reward computer first
     print("\n[1/4] Initializing reward computer...")
     
-    # Define ideal raw chemical properties:
-    # [logP, QED, SAS, docking_parp1, docking_fa7, docking_5ht1b, docking_braf, docking_jak2]
-    target_raw = [2.5, 0.9, 2.0, -12.0, -12.0, -12.0, -12.0, -12.0]
+    # Define ideal raw chemical properties (Alphabetical order from Stage 1):
+    # [SAS, docking_5ht1b, docking_braf, docking_fa7, docking_jak2, docking_parp1, logP, QED]
+    target_raw = [2.0, -12.0, -12.0, -12.0, -12.0, -12.0, 2.5, 0.9]
+    
+    # CHỈNH LẠI DUNG SAI (SIGMA): Làm bẹt đường cong cho các chỉ số Docking
+    tolerances = [
+        1.0,    # SAS (Z=-1.26, sigma=1.0 là đủ nhạy)
+        10.0,   # docking_5ht1b (Z=-14, cần sigma=10 để R > 0)
+        10.0,   # docking_braf
+        10.0,   # docking_fa7
+        10.0,   # docking_jak2
+        10.0,   # docking_parp1
+        1.0,    # logP (Z=0.01, sigma=1.0 là đủ)
+        1.0     # qed (Z=1.21, sigma=1.0 là đủ)
+    ]
     
     reward_computer = RewardComputer(
         property_scaler_path=STAGE1_SCALER,
         hes_model=hes_model,
         target_properties=target_raw,              # <--- CRITICAL FIX: Use raw target values
-        property_sigma=[1.0] * NUM_PROPERTIES,     # Keep tolerance at 1 Sigma
+        property_sigma=tolerances,                 # Use custom tolerances
         hes_output_is_normalized=HES_OUTPUT_IS_NORMALIZED,
         target_properties_are_normalized=False,    # <--- CRITICAL FIX: Force RewardComputer to scale the raw targets
     )
