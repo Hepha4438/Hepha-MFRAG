@@ -155,7 +155,7 @@ def initialize_training(hes_model, motif_vocab, shape_vocab, property_scaler):
     return env, agent, replay_buffer, reward_computer
 
 
-def run_episode(env, agent, reward_computer, replay_buffer, episode_num, training=True):
+def run_episode(env, agent, reward_computer, replay_buffer, episode_num, training=True, batch_size_sac=BATCH_SIZE_SAC):
     """
     Run a single training episode.
     
@@ -166,6 +166,7 @@ def run_episode(env, agent, reward_computer, replay_buffer, episode_num, trainin
         replay_buffer: ReplayBuffer instance
         episode_num: episode number
         training: whether in training mode
+        batch_size_sac: replay buffer sample size for SAC updates
     
     Returns:
         episode_info: dict with episode statistics
@@ -201,7 +202,7 @@ def run_episode(env, agent, reward_computer, replay_buffer, episode_num, trainin
         # SAC updates
         if training and len(replay_buffer) >= LEARN_STARTS:
             for _ in range(NUM_UPDATES_PER_STEP):
-                batch_states, batch_actions, batch_rewards, batch_next_states, batch_dones = replay_buffer.sample(BATCH_SIZE_SAC)
+                batch_states, batch_actions, batch_rewards, batch_next_states, batch_dones = replay_buffer.sample(batch_size_sac)
                 
                 # Convert to tensors
                 batch_dict = {
@@ -229,13 +230,14 @@ def run_episode(env, agent, reward_computer, replay_buffer, episode_num, trainin
     return episode_info
 
 
-def train(num_episodes=NUM_EPISODES, resume_from=None):
+def train(num_episodes=NUM_EPISODES, resume_from=None, batch_size_sac=BATCH_SIZE_SAC):
     """
     Main training loop.
     
     Args:
         num_episodes: number of episodes to train
         resume_from: optional checkpoint path to resume from
+        batch_size_sac: replay buffer sample size for SAC updates
     """
     # Set random seed
     np.random.seed(SEED)
@@ -260,7 +262,7 @@ def train(num_episodes=NUM_EPISODES, resume_from=None):
     print("="*80)
     print(f"\nConfiguration:")
     print(f"  - Episodes: {num_episodes}")
-    print(f"  - Batch size: {BATCH_SIZE_SAC}")
+    print(f"  - Batch size: {batch_size_sac}")
     print(f"  - Learning starts: {LEARN_STARTS} steps")
     print(f"  - Device: {DEVICE}")
     print(f"  - Max steps per episode: {MAX_STEPS_PER_EPISODE}")
@@ -273,7 +275,15 @@ def train(num_episodes=NUM_EPISODES, resume_from=None):
     try:
         for episode in range(num_episodes):
             # Run episode
-            episode_info = run_episode(env, agent, reward_computer, replay_buffer, episode)
+            episode_info = run_episode(
+                env,
+                agent,
+                reward_computer,
+                replay_buffer,
+                episode,
+                training=True,
+                batch_size_sac=batch_size_sac,
+            )
             
             # Log metrics
             episode_metrics['reward'].append(episode_info['total_reward'])
@@ -302,8 +312,15 @@ def train(num_episodes=NUM_EPISODES, resume_from=None):
                 print(f"\n[*] Running evaluation at episode {episode+1}...")
                 eval_rewards = []
                 for _ in range(NUM_EVAL_EPISODES):
-                    eval_info = run_episode(env, agent, reward_computer, replay_buffer, 
-                                           episode, training=False)
+                    eval_info = run_episode(
+                        env,
+                        agent,
+                        reward_computer,
+                        replay_buffer,
+                        episode,
+                        training=False,
+                        batch_size_sac=batch_size_sac,
+                    )
                     eval_rewards.append(eval_info['total_reward'])
                 
                 eval_avg = np.mean(eval_rewards)
@@ -352,7 +369,12 @@ if __name__ == "__main__":
     parser.add_argument("--episodes", type=int, default=NUM_EPISODES, help="Number of episodes")
     parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint")
     parser.add_argument("--seed", type=int, default=SEED, help="Random seed")
+    parser.add_argument("--batch-size-sac", type=int, default=BATCH_SIZE_SAC, help="SAC replay sample batch size")
     
     args = parser.parse_args()
     
-    train(num_episodes=args.episodes, resume_from=args.resume)
+    train(
+        num_episodes=args.episodes,
+        resume_from=args.resume,
+        batch_size_sac=args.batch_size_sac,
+    )
