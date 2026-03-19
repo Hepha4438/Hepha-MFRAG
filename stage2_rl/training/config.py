@@ -16,7 +16,7 @@ MOTIF_VOCAB_PATH = DATA_OUTPUT_DIR / "vocabularies/motif_vocab.pkl"
 SHAPE_VOCAB_PATH = DATA_OUTPUT_DIR / "vocabularies/shape_vocab.pkl"
 
 # Stage 2 output directory
-STAGE2_OUTPUT = PROJECT_ROOT / "stage2_rl/checkpoints"
+STAGE2_OUTPUT = PROJECT_ROOT / "stage2_rl"
 STAGE2_OUTPUT.mkdir(parents=True, exist_ok=True)
 
 # ===== Data Configuration =====

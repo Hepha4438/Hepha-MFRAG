@@ -268,6 +268,7 @@ def train(num_episodes=NUM_EPISODES, resume_from=None):
     
     episode_metrics = defaultdict(list)
     start_time = time.time()
+    best_eval_reward = -np.inf
     
     try:
         for episode in range(num_episodes):
@@ -307,7 +308,15 @@ def train(num_episodes=NUM_EPISODES, resume_from=None):
                 
                 eval_avg = np.mean(eval_rewards)
                 eval_std = np.std(eval_rewards)
-                print(f"    Eval Avg Reward: {eval_avg:.3f} ± {eval_std:.3f}\n")
+                print(f"    Eval Avg Reward: {eval_avg:.3f} ± {eval_std:.3f}")
+                
+                if eval_avg > best_eval_reward:
+                    best_eval_reward = eval_avg
+                    checkpoint_path = CHECKPOINT_DIR / "agent_best.pt"
+                    agent.save(checkpoint_path)
+                    print(f"    [🌟] New best model saved with evaluation reward: {best_eval_reward:.3f}\n")
+                else:
+                    print()
     
     except KeyboardInterrupt:
         print("\n\n[!] Training interrupted by user")
