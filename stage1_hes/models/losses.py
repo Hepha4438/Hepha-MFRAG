@@ -76,7 +76,10 @@ class SupervisedContrastiveLoss(nn.Module):
         mask.fill_diagonal_(0)
         
         # For numerical stability
-        logits = similarity
+        logits = similarity.clone()
+        
+        # Mask self-similarity (diagonal) BEFORE softmax to prevent shortcut learning
+        logits.fill_diagonal_(-1e9)
         
         # Compute log-sum-exp trick for stability
         log_probs = F.log_softmax(logits, dim=1)  # [N, N]

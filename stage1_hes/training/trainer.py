@@ -155,47 +155,8 @@ class HESTrainer:
                 # Move to device
                 batch = batch.to(self.device)
                 
-                # Create batch indices manually from ptr
-                if hasattr(batch, 'ptr') and batch.ptr is not None and len(batch.ptr) > 1:
-                    # ptr contains starting indices: [0, n1, n1+n2, ...]
-                    # means graph i has nodes [ptr[i]:ptr[i+1]]
-                    num_graphs = len(batch.ptr) - 1
-                    
-                    batch_g = torch.zeros(batch.x_g.shape[0], dtype=torch.long, device=self.device)
-                    for i in range(num_graphs):
-                        start = batch.ptr[i].item()
-                        end = batch.ptr[i+1].item()
-                        if start < batch.x_g.shape[0]:
-                            batch_g[start:min(end, batch.x_g.shape[0])] = i
-                    
-                    # For scaffold, distribute molecules evenly across scaffold nodes
-                    # (since we don't have separate ptr for scaffold)
-                    nodes_per_graph = max(1, batch.x_sc.shape[0] // max(1, num_graphs))
-                    batch_sc = torch.zeros(batch.x_sc.shape[0], dtype=torch.long, device=self.device)
-                    for i in range(num_graphs):
-                        start = i * nodes_per_graph
-                        end = (i + 1) * nodes_per_graph if i < num_graphs - 1 else batch.x_sc.shape[0]
-                        if start < batch.x_sc.shape[0]:
-                            batch_sc[start:min(end, batch.x_sc.shape[0])] = i
-                else:
-                    # Fallback: estimate num_graphs from ratio of node counts
-                    # Assume similar nodes per graph in both structures
-                    estimated_num_graphs = max(1, batch.x_g.shape[0] // max(batch.x_sc.shape[0], 1))
-                    batch_g = torch.zeros(batch.x_g.shape[0], dtype=torch.long, device=self.device)
-                    batch_sc = torch.zeros(batch.x_sc.shape[0], dtype=torch.long, device=self.device)
-                    
-                    # Distribute nodes evenly
-                    nodes_per_graph_g = max(1, batch.x_g.shape[0] // max(1, estimated_num_graphs))
-                    nodes_per_graph_sc = max(1, batch.x_sc.shape[0] // max(1, estimated_num_graphs))
-                    
-                    for i in range(estimated_num_graphs):
-                        start_g = i * nodes_per_graph_g
-                        end_g = (i + 1) * nodes_per_graph_g if i < estimated_num_graphs - 1 else batch.x_g.shape[0]
-                        batch_g[start_g:min(end_g, batch.x_g.shape[0])] = i
-                        
-                        start_sc = i * nodes_per_graph_sc
-                        end_sc = (i + 1) * nodes_per_graph_sc if i < estimated_num_graphs - 1 else batch.x_sc.shape[0]
-                        batch_sc[start_sc:min(end_sc, batch.x_sc.shape[0])] = i
+                batch_g = batch.x_g_batch if hasattr(batch, 'x_g_batch') else batch.batch
+                batch_sc = batch.x_sc_batch if hasattr(batch, 'x_sc_batch') else batch.batch
 
                 # Forward pass
                 outputs = self.model(
@@ -282,45 +243,8 @@ class HESTrainer:
             for batch in pbar:
                 batch = batch.to(self.device)
                 
-                # Create batch indices from ptr (same logic as training)
-                if hasattr(batch, 'ptr') and batch.ptr is not None and len(batch.ptr) > 1:
-                    num_graphs = len(batch.ptr) - 1
-                    batch_g = torch.zeros(batch.x_g.shape[0], dtype=torch.long, device=self.device)
-                    
-                    # Reconstruct batch_g from ptr
-                    for i in range(num_graphs):
-                        start = batch.ptr[i].item()
-                        end = batch.ptr[i+1].item()
-                        if start < batch.x_g.shape[0]:
-                            batch_g[start:min(end, batch.x_g.shape[0])] = i
-                    
-                    # For scaffold, distribute evenly (not using ptr which is for molecular graph)
-                    nodes_per_graph = max(1, batch.x_sc.shape[0] // max(1, num_graphs))
-                    batch_sc = torch.zeros(batch.x_sc.shape[0], dtype=torch.long, device=self.device)
-                    for i in range(num_graphs):
-                        start = i * nodes_per_graph
-                        end = (i + 1) * nodes_per_graph if i < num_graphs - 1 else batch.x_sc.shape[0]
-                        if start < batch.x_sc.shape[0]:
-                            batch_sc[start:min(end, batch.x_sc.shape[0])] = i
-                elif hasattr(batch, 'batch') and batch.batch is not None and batch.batch.numel() > 0:
-                    batch_g = batch.batch
-                    batch_sc = batch.batch
-                else:
-                    num_graphs = max(1, batch.x_g.shape[0] // max(batch.x_sc.shape[0], 1))
-                    batch_g = torch.zeros(batch.x_g.shape[0], dtype=torch.long, device=self.device)
-                    batch_sc = torch.zeros(batch.x_sc.shape[0], dtype=torch.long, device=self.device)
-                    
-                    nodes_per_graph_g = max(1, batch.x_g.shape[0] // max(1, num_graphs))
-                    nodes_per_graph_sc = max(1, batch.x_sc.shape[0] // max(1, num_graphs))
-                    
-                    for i in range(num_graphs):
-                        start_g = i * nodes_per_graph_g
-                        end_g = (i + 1) * nodes_per_graph_g if i < num_graphs - 1 else batch.x_g.shape[0]
-                        batch_g[start_g:min(end_g, batch.x_g.shape[0])] = i
-                        
-                        start_sc = i * nodes_per_graph_sc
-                        end_sc = (i + 1) * nodes_per_graph_sc if i < num_graphs - 1 else batch.x_sc.shape[0]
-                        batch_sc[start_sc:min(end_sc, batch.x_sc.shape[0])] = i
+                batch_g = batch.x_g_batch if hasattr(batch, 'x_g_batch') else batch.batch
+                batch_sc = batch.x_sc_batch if hasattr(batch, 'x_sc_batch') else batch.batch
                 
                 # Forward pass
                 outputs = self.model(
@@ -434,8 +358,6 @@ class HESTrainer:
                 for idx, batch in enumerate(self.train_loader):
                     if hasattr(batch, 'y'):
                         all_props.append(batch.y.numpy() if isinstance(batch.y, torch.Tensor) else batch.y)
-                    if idx >= 10:  # Only use first 10 batches for speed
-                        break
             
             if all_props:
                 all_props = np.concatenate(all_props, axis=0)

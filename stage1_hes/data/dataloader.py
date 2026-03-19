@@ -149,6 +149,7 @@ class HESDataLoader:
             batch_size=batch_size,
             shuffle=shuffle_train,
             num_workers=num_workers,
+            follow_batch=['x_g', 'x_sc']
         )
         
         self.val_loader = PyGDataLoader(
@@ -156,6 +157,7 @@ class HESDataLoader:
             batch_size=batch_size,
             shuffle=False,
             num_workers=num_workers,
+            follow_batch=['x_g', 'x_sc']
         )
         
         self.test_loader = PyGDataLoader(
@@ -163,6 +165,7 @@ class HESDataLoader:
             batch_size=batch_size,
             shuffle=False,
             num_workers=num_workers,
+            follow_batch=['x_g', 'x_sc']
         )
         
         print(f"[DataLoader] DataLoaders created")
