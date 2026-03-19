@@ -17,6 +17,12 @@ import pickle
 import time
 from tqdm import tqdm
 from collections import defaultdict
+import warnings
+from rdkit import RDLogger
+
+# Disable warnings
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+RDLogger.DisableLog('rdApp.*')
 
 # Setup paths
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -90,11 +96,18 @@ def initialize_training(hes_model, motif_vocab, shape_vocab, property_scaler):
     
     # Initialize reward computer first
     print("\n[1/4] Initializing reward computer...")
+    
+    # Define ideal raw chemical properties:
+    # [logP, QED, SAS, docking_parp1, docking_fa7, docking_5ht1b, docking_braf, docking_jak2]
+    target_raw = [2.5, 0.9, 2.0, -12.0, -12.0, -12.0, -12.0, -12.0]
+    
     reward_computer = RewardComputer(
         property_scaler_path=STAGE1_SCALER,
         hes_model=hes_model,
+        target_properties=target_raw,              # <--- CRITICAL FIX: Use raw target values
+        property_sigma=[1.0] * NUM_PROPERTIES,     # Keep tolerance at 1 Sigma
         hes_output_is_normalized=HES_OUTPUT_IS_NORMALIZED,
-        target_properties_are_normalized=TARGET_PROPERTIES_ARE_NORMALIZED,
+        target_properties_are_normalized=False,    # <--- CRITICAL FIX: Force RewardComputer to scale the raw targets
     )
     print(f"  ✓ Reward computer initialized")
     print(f"    Target properties: {reward_computer.target_properties}")

@@ -199,6 +199,7 @@ class MoleculeEnv(gym.Env):
         result_A1 = self._phase_A1(a1, a2, a3)
         if result_A1 is None or len(result_A1) < 3:
             reward = -1.0
+            done = True  # <--- CRITICAL FIX: Terminate episode on invalid action
             info['error'] = 'invalid_phase_A1'
             return self._get_hes_encoding(), reward, done, info
         
@@ -215,6 +216,7 @@ class MoleculeEnv(gym.Env):
         if labeled_molecule is None:
             # Invalid labeling - assign penalty
             reward += -1.0
+            done = True  # <--- CRITICAL FIX: Terminate episode on invalid labeling
             info['error'] = 'invalid_phase_A2'
             return self._get_hes_encoding(), reward, done, info
         

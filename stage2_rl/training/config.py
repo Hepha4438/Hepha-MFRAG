@@ -22,7 +22,12 @@ STAGE2_OUTPUT.mkdir(parents=True, exist_ok=True)
 # ===== Data Configuration =====
 BATCH_SIZE = 32
 NUM_WORKERS = 4
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+if torch.cuda.is_available():
+    DEVICE = "cuda"
+elif torch.backends.mps.is_available():
+    DEVICE = "mps"
+else:
+    DEVICE = "cpu"
 
 # Data split (from preprocessing)
 TRAIN_INDICES = list(range(0, 199564))          # First 199,564
@@ -66,9 +71,9 @@ ACTION_VECTOR_SIZE = 3               # a1 (attachment), a2 (shape), a3 (orientat
 # Actor-Critic architecture
 ACTOR_HIDDEN_DIM = 256
 CRITIC_HIDDEN_DIM = 256
-ACTOR_LEARNING_RATE = 1e-4
-CRITIC_LEARNING_RATE = 1e-4
-ALPHA_LEARNING_RATE = 1e-4
+ACTOR_LEARNING_RATE = 3e-4
+CRITIC_LEARNING_RATE = 3e-4
+ALPHA_LEARNING_RATE = 3e-4
 
 # SAC training
 TARGET_UPDATE_INTERVAL = 1          # Update target every N steps
@@ -78,7 +83,7 @@ ALPHA = 0.2                         # Temperature for entropy regularization (le
 
 # Replay buffer
 REPLAY_BUFFER_SIZE = 100000
-BATCH_SIZE_SAC = 32
+BATCH_SIZE_SAC = 128
 LEARN_STARTS = 1000   # Start SAC training after this many env steps
 
 # ===== Training Configuration =====
@@ -89,7 +94,7 @@ NUM_UPDATES_PER_STEP = 1        # SAC updates per environment step
 # Evaluation
 EVAL_INTERVAL = 1000              # Evaluate every N episodes
 NUM_EVAL_EPISODES = 10            # Number of episodes for evaluation
-SAVE_INTERVAL = 5000              # Save checkpoint every N episodes
+SAVE_INTERVAL = 400              # Save checkpoint every N episodes
 
 # ===== Reward Configuration =====
 # Potential-based reward shaping
@@ -112,7 +117,7 @@ TERMINAL_INVALID_MOLECULE_PENALTY = -1.0
 # ===== Logging =====
 WANDB_PROJECT = "Hepha-MFRAG"
 WANDB_RUN_NAME = "stage2_rl_sac"
-LOG_INTERVAL = 100
+LOG_INTERVAL = 25
 CHECKPOINT_DIR = STAGE2_OUTPUT / "checkpoints"
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
