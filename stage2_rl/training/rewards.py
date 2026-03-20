@@ -335,7 +335,7 @@ class RewardComputer:
         return float(reward_A1)
     
     def compute_reward_A2(self, mol_before: Chem.Mol, mol_after: Chem.Mol,
-                         w_qed: float = 0.3, w_sa: float = 0.3) -> float:
+                         w_qed: float = R_QED_WEIGHT, w_sa: float = R_SA_WEIGHT) -> float:
         """
         Compute reward after Phase A2 (atom/bond labeling).
         
@@ -391,7 +391,7 @@ class RewardComputer:
         return float(reward_A2)
     
     def compute_terminal_reward(self, mol_initial: Chem.Mol, mol_final: Chem.Mol,
-                               w_qed: float = 0.3, w_sa: float = 0.3) -> float:
+                               w_qed: float = R_QED_WEIGHT, w_sa: float = R_SA_WEIGHT) -> float:
         """
         Compute terminal reward at episode end.
         

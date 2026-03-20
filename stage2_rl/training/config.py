@@ -105,10 +105,9 @@ W_QED = 0.3         # QED contribution to property reward
 W_SA = 0.3          # SA (Synthetic Accessibility) contribution
 W_DOCKING = 0.4     # Average docking scores
 
-# Phase A2 rewards
-R_QED_WEIGHT = 0.2   # Weight for QED improvement
-R_SA_WEIGHT = 0.2    # Weight for SA improvement
-R_DOCK_WEIGHT = 0.6  # Weight for docking improvement
+# Phase A2 / Terminal combined explicit rewards
+R_QED_WEIGHT = 0.3   # Explicit target weight for QED calculation
+R_SA_WEIGHT = 0.3    # Explicit target weight for SA calculation
 
 # Termination rewards
 TERMINAL_VALID_MOLECULE_BONUS = 1.0
