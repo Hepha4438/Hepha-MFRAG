@@ -393,7 +393,8 @@ class SACAgent:
     
     def load(self, checkpoint_path: Path):
         """Load agent networks and optimizers."""
-        checkpoint = torch.load(checkpoint_path, weights_only=False)
+        device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
         self.actor.load_state_dict(checkpoint['actor'])
         self.critic1.load_state_dict(checkpoint['critic1'])
         self.critic2.load_state_dict(checkpoint['critic2'])
