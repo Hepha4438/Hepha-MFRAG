@@ -135,8 +135,15 @@ class MoleculeEnv(gym.Env):
             obs: Initial state (HES encoding)
         """
         if initial_smiles is None:
-            # In practice, would sample from training set
-            initial_smiles = "CC"  # Start with ethane
+            import random
+            STARTING_SCAFFOLDS = [
+                "C", "CC", "C=C", "C#C",          # Acyclic
+                "C1CC1", "C1CCC1", "C1CCCC1", "C1CCCCC1",  # Aliphatic rings
+                "c1ccccc1", "c1ccc2ccccc2c1",     # Aromatic rings
+                "c1ccncc1", "c1ccsc1", "c1ccoc1", # Heteroaromatics
+                "C1CCOC1", "C1CCNCC1"             # Aliphatic heterocycles
+            ]
+            initial_smiles = random.choice(STARTING_SCAFFOLDS)
         
         self.molecule_smiles = initial_smiles
         self.current_molecule = Chem.MolFromSmiles(initial_smiles)

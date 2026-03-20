@@ -87,7 +87,7 @@ def evaluate():
     # Generation loop
     print(f"\nGenerating {args.num_samples} molecules...")
     for i in tqdm(range(args.num_samples)):
-        state = env.reset(initial_smiles="CC")
+        state = env.reset() # This now randomly picks from STARTING_SCAFFOLDS in the env
         done = False
         step_count = 0
         
