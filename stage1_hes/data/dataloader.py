@@ -148,7 +148,8 @@ class HESDataLoader:
             train_dataset,
             batch_size=batch_size,
             shuffle=shuffle_train,
-            num_workers=num_workers,
+            num_workers=4,
+            pin_memory=True,
             follow_batch=['x_g', 'x_sc']
         )
         
@@ -156,7 +157,8 @@ class HESDataLoader:
             val_dataset,
             batch_size=batch_size,
             shuffle=False,
-            num_workers=num_workers,
+            num_workers=4,
+            pin_memory=True,
             follow_batch=['x_g', 'x_sc']
         )
         
@@ -164,7 +166,8 @@ class HESDataLoader:
             test_dataset,
             batch_size=batch_size,
             shuffle=False,
-            num_workers=num_workers,
+            num_workers=4,
+            pin_memory=True,
             follow_batch=['x_g', 'x_sc']
         )
         
