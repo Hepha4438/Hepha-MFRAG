@@ -7,7 +7,7 @@
   "num_shape_ids": 346,
   "atom_feature_dim": 15,
   "scaffold_node_feature_dim": 16,
-  "batch_size": 128,
+  "batch_size": 256,
   "learning_rate": 0.0003,
   "weight_decay": 1e-05,
   "loss_weights": {
