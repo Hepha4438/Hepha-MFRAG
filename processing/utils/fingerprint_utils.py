@@ -1,9 +1,44 @@
 """Fingerprint utilities for shape/motif ECFP computation"""
+import warnings
+import logging
+import sys
+import os
+from io import StringIO
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit import DataStructs
 import pickle
+
+# Suppress RDKit deprecation warnings about MorganGenerator
+warnings.filterwarnings('ignore', category=DeprecationWarning, module='rdkit')
+
+# Suppress RDKit's internal logger (it uses its own logging system)
+logging.getLogger('rdkit').setLevel(logging.ERROR)
+logging.getLogger('rdkit.Chem').setLevel(logging.ERROR)
+
+# Suppress stderr output from RDKit
+class SuppressRDKitStderr:
+    """Context manager to suppress RDKit stderr at file descriptor level (C++ warnings)"""
+    def __enter__(self):
+        # Save current stderr file descriptor
+        self._original_fd = os.dup(2)
+        # Open /dev/null
+        self._devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        # Redirect stderr (file descriptor 2) to /dev/null
+        os.dup2(self._devnull_fd, 2)
+        # Also redirect Python's sys.stderr
+        self._original_stderr = sys.stderr
+        sys.stderr = StringIO()
+        return self
+    
+    def __exit__(self, *args):
+        # Restore stderr file descriptor
+        os.dup2(self._original_fd, 2)
+        os.close(self._original_fd)
+        os.close(self._devnull_fd)
+        # Restore Python's sys.stderr
+        sys.stderr = self._original_stderr
 
 def compute_ecfp(smiles, radius=2, nbits=2048):
     """Compute ECFP fingerprint for molecule/fragment"""
@@ -11,7 +46,11 @@ def compute_ecfp(smiles, radius=2, nbits=2048):
         mol = Chem.MolFromSmiles(smiles)
         if mol is None:
             return None
-        fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius, nBits=nbits)
+        # Suppress both RDKit warnings and stderr output
+        with warnings.catch_warnings(), SuppressRDKitStderr():
+            warnings.filterwarnings('ignore', category=DeprecationWarning)
+            warnings.filterwarnings('ignore', message='.*MorganGenerator.*')
+            fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius, nBits=nbits)
         # Convert to numpy array
         arr = np.zeros(nbits, dtype=np.uint8)
         DataStructs.ConvertToNumpyArray(fp, arr)

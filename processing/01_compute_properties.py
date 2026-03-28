@@ -3,12 +3,16 @@ Step 1: Add docking scores to existing properties
 Input: zinc250k.csv (with smiles, logP, qed, SAS already computed)
 Output: properties.csv with added [docking_parp1, docking_fa7, docking_5ht1b, docking_braf, docking_jak2]
 """
+import warnings
 import pandas as pd
 import sys
 from pathlib import Path
 
+# Suppress RDKit deprecation warnings
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+
 sys.path.insert(0, str(Path(__file__).parent))
-from utils.docking_estimator import compute_docking_scores_ecfp
+from utils.docking_estimator import get_proxy_docking_scores
 from config import DEFAULT_CONFIG
 
 def main():
@@ -33,9 +37,9 @@ def main():
     smiles_list = df_props['smiles'].tolist()
     
     # Compute only docking scores
-    print(f"\n[2/2] Computing docking scores for {len(config.docking_proteins)} proteins...")
-    df_docking = compute_docking_scores_ecfp(smiles_list, config.docking_proteins, config.num_processes)
-    print(f"  ✓ Computed docking scores for {len(df_docking)} molecules")
+    print(f"\n[2/2] Computing surrogate docking scores for {len(config.docking_proteins)} proteins...")
+    df_docking = get_proxy_docking_scores(smiles_list, config.docking_proteins, config.num_processes)
+    print(f"  ✓ Computed proxy docking scores for {len(df_docking)} molecules")
     
     # Merge docking scores with existing properties
     print(f"\nMerging docking scores with existing properties...")

@@ -1,119 +1,59 @@
-"""Docking score estimation using ECFP similarity or AutoDock Vina"""
+"""Docking score estimation using Surrogate Random Forest models"""
+import os
+import warnings
+import logging
+import joblib
 import numpy as np
-from rdkit import Chem
-from rdkit.Chem import AllChem
-from rdkit import DataStructs
 import pandas as pd
 from tqdm import tqdm
+from .fingerprint_utils import compute_ecfp
 
-# Known binding affinities for reference ligands (mock data for estimation)
-KNOWN_AFFINITY_DATA = {
-    "parp1": {
-        "CCc1ccc(cc1)C(=O)Nc2cc(Cl)ccc2": -8.5,
-        "c1ccc(cc1)C(=O)O": -5.0,
-    },
-    "fa7": {
-        "c1ccc(cc1)c2ccccc2": -7.2,
-        "CCc1ccccc1": -6.0,
-    },
-    "5ht1b": {
-        "c1ccc(cc1)CCNc2ccc(cc2)": -8.1,
-        "CCCc1ccccc1": -6.5,
-    },
-    "braf": {
-        "Cc1ccc(O)c(cc1)n2c(=O)c3ccccc3nc2": -9.2,
-        "c1ccc(cc1)N2C(=O)c3ccccc3c4ccccc24": -8.0,
-    },
-    "jak2": {
-        "c1ccc(cc1)N2C(=O)c3ccccc3c4ccccc24": -8.8,
-        "c1ccc(cc1)N=Nc2ccccc2": -7.5,
-    },
-}
+# Suppress RDKit deprecation warnings and logger
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+warnings.filterwarnings('ignore', message='.*MorganGenerator.*')
+logging.getLogger('rdkit').setLevel(logging.ERROR)
 
-def compute_ecfp_fingerprint(smiles, radius=2, nbits=2048):
-    """Compute ECFP (circular) fingerprint"""
-    try:
-        mol = Chem.MolFromSmiles(smiles)
-        if mol is None:
-            return None
-        return AllChem.GetMorganFingerprintAsBitVect(mol, radius, nBits=nbits)
-    except:
-        return None
+_MODELS = {}
 
-def ecfp_similarity(smiles1, smiles2):
-    """Tanimoto similarity between ECFP fingerprints"""
-    fp1 = compute_ecfp_fingerprint(smiles1)
-    fp2 = compute_ecfp_fingerprint(smiles2)
-    if fp1 is None or fp2 is None:
-        return 0.0
-    return DataStructs.TanimotoSimilarity(fp1, fp2)
-
-def estimate_docking_score_ecfp(smiles, protein):
+def get_proxy_docking_scores(smiles_list, targets, num_processes=1):
     """
-    Estimate docking score using ECFP-based similarity to known ligands
-    Returns binding affinity (lower = better, typically -12 to 0)
+    Estimate docking score using Scikit-Learn Random Forest surrogates trained on AutoDock Vina.
+    Returns binding affinity DataFrame.
     """
-    if protein not in KNOWN_AFFINITY_DATA:
-        return -6.0
+    global _MODELS
     
-    ref_ligands = KNOWN_AFFINITY_DATA[protein]
-    similarities = []
-    affinities = []
-    
-    for ref_smiles, ref_affinity in ref_ligands.items():
-        sim = ecfp_similarity(smiles, ref_smiles)
-        if sim > 0:
-            similarities.append(sim)
-            affinities.append(ref_affinity)
-    
-    if not similarities:
-        return -6.0
-    
-    # Weighted average affinity
-    similarities = np.array(similarities)
-    affinities = np.array(affinities)
-    weighted_affinity = np.average(affinities, weights=similarities)
-    
-    # Add small noise to avoid overfitting
-    noise = np.random.normal(0, 0.3)
-    return float(weighted_affinity + noise)
+    # Lazy-load models if not already loaded
+    if not _MODELS:
+        # Assuming script is run from project root, but let's be robust
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        models_dir = os.path.join(project_root, 'processing', 'output', 'models')
+        
+        for target in targets:
+            model_path = os.path.join(models_dir, f"rf_{target}.joblib")
+            if os.path.exists(model_path):
+                _MODELS[target] = joblib.load(model_path)
+            else:
+                print(f"Warning: Surrogate model for {target} not found at {model_path}. Yielding default score.")
+                _MODELS[target] = None
 
-# Module-level function for multiprocessing (must be picklable)
-def _compute_docking_row(smiles, proteins):
-    """Compute docking scores for a single molecule (for multiprocessing)"""
-    row = {"smiles": smiles}
-    for protein in proteins:
-        row[f"docking_{protein}"] = estimate_docking_score_ecfp(smiles, protein)
-    return row
-
-def compute_docking_scores_ecfp(smiles_list, proteins, num_processes=8):
-    """Compute ECFP-based docking scores for all molecules"""
-    from multiprocessing import Pool
-    import functools
+    results = []
     
-    print(f"Computing ECFP-based docking scores for {len(smiles_list)} molecules...")
-    
-    # Precompute reference fingerprints (cache them)
-    ref_fps = {}
-    for protein, ligands in KNOWN_AFFINITY_DATA.items():
-        ref_fps[protein] = {}
-        for ref_smiles, ref_affinity in ligands.items():
-            fp = compute_ecfp_fingerprint(ref_smiles)
-            if fp is not None:
-                ref_fps[protein][ref_smiles] = (fp, ref_affinity)
-    
-    # Use multiprocessing with partial function
-    if num_processes > 1:
-        compute_func = functools.partial(_compute_docking_row, proteins=proteins)
-        with Pool(num_processes) as pool:
-            results = list(tqdm(
-                pool.imap(compute_func, smiles_list, chunksize=100),
-                total=len(smiles_list),
-                desc="Docking scores"
-            ))
-    else:
-        results = []
-        for smiles in tqdm(smiles_list, desc="Docking scores"):
-            results.append(_compute_docking_row(smiles, proteins))
-    
+    print(f"Computing Proxy Vina scores for {len(smiles_list)} molecules...")
+    for smiles in tqdm(smiles_list, desc="Proxy docking scores", leave=False):
+        row = {"smiles": smiles}
+        fp = compute_ecfp(smiles)
+        
+        for target in targets:
+            if fp is not None and _MODELS.get(target) is not None:
+                try:
+                    # Input to predict is a 2D array [n_samples, n_features]
+                    pred = _MODELS[target].predict([fp])[0]
+                    row[f"docking_{target}"] = float(pred)
+                except Exception as e:
+                    row[f"docking_{target}"] = -6.0 # Fallback on error
+            else:
+                row[f"docking_{target}"] = -6.0 # Default fallback if fp fails or model missing
+                
+        results.append(row)
+        
     return pd.DataFrame(results)
