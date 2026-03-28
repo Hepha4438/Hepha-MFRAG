@@ -21,7 +21,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from stage2_rl.environment.molecule_env import MoleculeEnv
 from stage2_rl.models.sac_agent import SACAgent
 from stage2_rl.train import load_stage1_components, initialize_training
-from processing.utils.docking_estimator import estimate_docking_score_ecfp
+from processing.utils.docking_estimator import get_proxy_docking_scores
+
+TARGET_CHOICES = ['parp1', 'fa7', '5ht1b', 'braf', 'jak2']
 
 def compute_sa_reward(mol):
     if mol is None:
@@ -48,12 +50,26 @@ def load_training_dataset(path):
         print(f"Warning: Could not load reference dataset: {e}")
     return dataset
 
+def load_seed_smiles(path):
+    """Load ordered SMILES list for evaluation initialization."""
+    seed_smiles = []
+    try:
+        with open(path, "r") as f:
+            for line in f:
+                smiles = line.strip().split()[0]
+                if smiles and smiles != "smiles":
+                    seed_smiles.append(smiles)
+    except Exception as e:
+        print(f"Warning: Could not load evaluation seed SMILES: {e}")
+    return seed_smiles
+
 def evaluate():
     parser = argparse.ArgumentParser(description="Evaluate Stage 2 SAC Agent")
     parser.add_argument("--num-samples", type=int, default=1000, help="Number of molecules to generate")
-    parser.add_argument("--checkpoint", type=str, default=str(PROJECT_ROOT / "stage2_rl/checkpoints/agent_best.pt"), help="Agent checkpoint")
+    parser.add_argument("--checkpoint", type=str, default=None, help="Agent checkpoint (optional override)")
     parser.add_argument("--output", type=str, default="evaluation_results.csv", help="Output CSV file")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--target", type=str, default="parp1", choices=TARGET_CHOICES, help="Target protein for agent/evaluation")
     args = parser.parse_args()
     
     torch.manual_seed(args.seed)
@@ -66,28 +82,37 @@ def evaluate():
     # 1. Setup Environment and Agent
     hes_model, motif_vocab, shape_vocab, property_scaler = load_stage1_components()
     env, agent, replay_buffer, reward_computer = initialize_training(
-        hes_model, motif_vocab, shape_vocab, property_scaler
+        hes_model, motif_vocab, shape_vocab, property_scaler, target=args.target
     )
+
+    checkpoint_path = args.checkpoint if args.checkpoint else str(PROJECT_ROOT / f"stage2_rl/checkpoints/agent_{args.target}_final.pt")
     
-    if os.path.exists(args.checkpoint):
-        agent.load(args.checkpoint)
-        print(f"[✓] Loaded agent from {args.checkpoint}")
+    if os.path.exists(checkpoint_path):
+        agent.load(checkpoint_path)
+        print(f"[✓] Loaded agent from {checkpoint_path}")
     else:
-        print(f"[x] Checkpoint not found at {args.checkpoint}!")
+        print(f"[x] Checkpoint not found at {checkpoint_path}!")
         return
         
     reference_data_path = PROJECT_ROOT / "data/smiles/zinc250k/zinc250k.smi"
     reference_dataset = load_training_dataset(reference_data_path)
+    seed_smiles_all = load_seed_smiles(reference_data_path)
     print(f"Loaded {len(reference_dataset)} reference SMILES.")
+    print(f"Loaded {len(seed_smiles_all)} seed SMILES for evaluation reset.")
+    if not seed_smiles_all:
+        print("[x] No seed SMILES available for evaluation reset.")
+        return
     
-    docking_proteins = ["parp1", "fa7", "5ht1b", "braf", "jak2"]
+    docking_proteins = TARGET_CHOICES
     
     generated_smiles = []
+    seed_indices = np.random.choice(len(seed_smiles_all), size=args.num_samples, replace=len(seed_smiles_all) < args.num_samples)
+    eval_seed_smiles = [seed_smiles_all[i] for i in seed_indices]
     
     # Generation loop
     print(f"\nGenerating {args.num_samples} molecules...")
-    for i in tqdm(range(args.num_samples)):
-        state = env.reset() # This now randomly picks from STARTING_SCAFFOLDS in the env
+    for initial_smiles in tqdm(eval_seed_smiles):
+        state = env.reset(initial_smiles=initial_smiles)
         done = False
         step_count = 0
         
@@ -135,23 +160,35 @@ def evaluate():
     results = []
     
     print("Calculating properties for valid molecules...")
+    
+    # Batch compute docking scores for all molecules at once (more efficient than per-molecule)
+    print("  [1/2] Computing batch docking scores...")
+    df_docking = get_proxy_docking_scores(valid_smiles_list, docking_proteins)
+    # Convert docking scores to dict for fast lookup: {smiles: {target: score}}
+    docking_dict = {}
+    for idx, row in df_docking.iterrows():
+        smiles = row['smiles']
+        docking_dict[smiles] = {prot: row[f'docking_{prot}'] for prot in docking_proteins}
+    
+    print("  [2/2] Computing molecular properties...")
     for s, mol in tqdm(zip(valid_smiles_list, valid_mols), total=len(valid_mols)):
         qed_val = QED.qed(mol)
         sa_val = compute_sa_reward(mol)
         
-        # Calculate docking
-        docking_scores = []
-        for prot in docking_proteins:
-            score = estimate_docking_score_ecfp(s, prot)
-            docking_scores.append(score)
-            
         row = {
             "SMILES": s,
             "QED": qed_val,
             "SA": sa_val
         }
-        for i, prot in enumerate(docking_proteins):
-            row[f"Docking_{prot}"] = docking_scores[i]
+        
+        # Add docking scores from batch computation
+        if s in docking_dict:
+            for prot in docking_proteins:
+                row[f"Docking_{prot}"] = docking_dict[s][prot]
+        else:
+            # Fallback: set default scores if not found
+            for prot in docking_proteins:
+                row[f"Docking_{prot}"] = -6.0
             
         results.append(row)
         

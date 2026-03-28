@@ -42,6 +42,7 @@ class RewardComputer:
                  hes_model = None,
                  target_properties: np.ndarray = None,
                  property_sigma: np.ndarray = None,
+                 target_protein: str = "parp1",
                  hes_output_is_normalized: bool = HES_OUTPUT_IS_NORMALIZED,
                  target_properties_are_normalized: bool = TARGET_PROPERTIES_ARE_NORMALIZED):
         """
@@ -52,6 +53,7 @@ class RewardComputer:
             hes_model: Trained HES model for Y prediction
             target_properties: Y_i* HYPERPARAMETER (target values for each property, in normalized space) [8,]
             property_sigma: σ_i HYPERPARAMETER (tolerance for each property, in normalized space) [8,]
+            target_protein: target docking protein for single-target reward optimization
             hes_output_is_normalized: If True, skip StandardScaler.transform on HES outputs
             target_properties_are_normalized: If False, apply SS.transform to Y* once at init
         
@@ -66,6 +68,19 @@ class RewardComputer:
         self.hes_model = hes_model
         self.hes_output_is_normalized = hes_output_is_normalized
         self.target_properties_are_normalized = target_properties_are_normalized
+        self.target_protein = target_protein
+        self.docking_index_map = {
+            "parp1": 3,
+            "fa7": 4,
+            "5ht1b": 5,
+            "braf": 6,
+            "jak2": 7,
+        }
+        if self.target_protein not in self.docking_index_map:
+            raise ValueError(
+                f"Unsupported target_protein '{self.target_protein}'. "
+                f"Must be one of {list(self.docking_index_map.keys())}"
+            )
         
         # Target properties Y_i* - HYPERPARAMETER (must be provided by user)
         if target_properties is None:
@@ -95,6 +110,7 @@ class RewardComputer:
         print(f"    Scaler scale (for normalization): {self.property_scaler.scale_}")
         print(f"    Target properties Y_i* (HYPERPARAMETER): {self.target_properties}")
         print(f"    Tolerances σ_i (HYPERPARAMETER): {self.property_sigma}")
+        print(f"    Target docking protein: {self.target_protein}")
         print(f"    HES output normalized: {self.hes_output_is_normalized}")
         print(f"    Y* normalized: {self.target_properties_are_normalized}")
     
@@ -226,17 +242,17 @@ class RewardComputer:
             -((properties_normalized - self.target_properties) ** 2) / (2 * self.property_sigma ** 2)
         )  # Shape: (batch, 8)
         
-        # Use all 8 properties, but apply weights
+        # Use QED + SA + single target docking only
         from stage2_rl.training import config
         
         weights = np.zeros(8)
-        # LogP
-        weights[0] = 0.0  # By default, config doesn't have W_LOGP, taking up remainder if any, but let's leave 0.0
+        docking_idx = self.docking_index_map[self.target_protein]
+
         # QED and SA
         weights[1] = config.W_QED
         weights[2] = config.W_SA
-        # 5 docking scores share W_DOCKING
-        weights[3:8] = config.W_DOCKING / 5.0
+        # Single docking score for selected target protein
+        weights[docking_idx] = config.W_DOCKING
         
         if is_terminal:
             # Exclude QED and SA because they are computed natively by RDKit

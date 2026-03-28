@@ -24,6 +24,9 @@ from stage2_rl.training.config import *
 # ===== Molecular Constants =====
 VALENCE_DICT = {6: 4, 7: 3, 8: 2, 16: 2, 15: 3, 9: 1, 17: 1, 35: 1, 53: 1}
 
+# Simple ring scaffolds for training initialization
+STARTING_SCAFFOLDS = ["c1ccccc1", "C1CCCC1", "C1=CN=CN1", "c1ccncc1", "c1cnccc1"]
+
 
 class MoleculeEnv(gym.Env):
     """
@@ -46,7 +49,7 @@ class MoleculeEnv(gym.Env):
     - Terminal reward: property changes from start to end
     """
     
-    def __init__(self, hes_model, motif_vocab, shape_vocab, property_scaler, reward_computer=None):
+    def __init__(self, hes_model, motif_vocab, shape_vocab, property_scaler, reward_computer=None, target_protein: str = "parp1"):
         """
         Initialize environment.
         
@@ -56,6 +59,7 @@ class MoleculeEnv(gym.Env):
             shape_vocab: dict{shape_hash → {motifs, count, avg_ecfp}}
             property_scaler: Fitted StandardScaler for property normalization
             reward_computer: RewardComputer instance (will be created if None)
+            target_protein: Target protein for single-target reward optimization
         """
         super().__init__()
         
@@ -70,6 +74,7 @@ class MoleculeEnv(gym.Env):
             self.reward_computer = RewardComputer(
                 property_scaler_path=STAGE1_SCALER,
                 hes_model=self.hes_model,
+                target_protein=target_protein,
                 hes_output_is_normalized=HES_OUTPUT_IS_NORMALIZED,
                 target_properties_are_normalized=TARGET_PROPERTIES_ARE_NORMALIZED,
             )
@@ -129,25 +134,16 @@ class MoleculeEnv(gym.Env):
         Reset environment.
         
         Args:
-            initial_smiles: Optional initial molecule SMILES (default: random from training set)
+            initial_smiles: Optional initial molecule SMILES.
+                           - If provided: use it directly (evaluation mode)
+                           - If None: sample from simple STARTING_SCAFFOLDS (training mode)
         
         Returns:
             obs: Initial state (HES encoding)
         """
         if initial_smiles is None:
             import random
-            if hasattr(self, 'motif_vocab') and self.motif_vocab:
-                motif_smiles_list = list(self.motif_vocab.keys())
-                initial_smiles = random.choice(motif_smiles_list)
-            else:
-                STARTING_SCAFFOLDS = [
-                    "C", "CC", "C=C", "C#C",          # Acyclic
-                    "C1CC1", "C1CCC1", "C1CCCC1", "C1CCCCC1",  # Aliphatic rings
-                    "c1ccccc1", "c1ccc2ccccc2c1",     # Aromatic rings
-                    "c1ccncc1", "c1ccsc1", "c1ccoc1", # Heteroaromatics
-                    "C1CCOC1", "C1CCNCC1"             # Aliphatic heterocycles
-                ]
-                initial_smiles = random.choice(STARTING_SCAFFOLDS)
+            initial_smiles = random.choice(STARTING_SCAFFOLDS)
         
         self.molecule_smiles = initial_smiles
         self.current_molecule = Chem.MolFromSmiles(initial_smiles)

@@ -36,6 +36,8 @@ from stage2_rl.models.sac_agent import SACAgent
 from stage2_rl.training.rewards import RewardComputer, ReplayBuffer
 from stage1_hes.models.hes_model import HESModel
 
+TARGET_CHOICES = ['parp1', 'fa7', '5ht1b', 'braf', 'jak2']
+
 
 def load_stage1_components():
     """Load trained HES model and preprocessors from Stage 1."""
@@ -88,7 +90,7 @@ def load_stage1_components():
     return hes_model, motif_vocab, shape_vocab, property_scaler
 
 
-def initialize_training(hes_model, motif_vocab, shape_vocab, property_scaler):
+def initialize_training(hes_model, motif_vocab, shape_vocab, property_scaler, target="parp1"):
     """Initialize environment, agent, and reward computer."""
     print("\n" + "="*80)
     print("INITIALIZING STAGE 2 TRAINING")
@@ -118,6 +120,7 @@ def initialize_training(hes_model, motif_vocab, shape_vocab, property_scaler):
         hes_model=hes_model,
         target_properties=target_raw,              # <--- CRITICAL FIX: Use raw target values
         property_sigma=tolerances,                 # Use custom tolerances
+        target_protein=target,
         hes_output_is_normalized=HES_OUTPUT_IS_NORMALIZED,
         target_properties_are_normalized=False,    # <--- CRITICAL FIX: Force RewardComputer to scale the raw targets
     )
@@ -133,6 +136,7 @@ def initialize_training(hes_model, motif_vocab, shape_vocab, property_scaler):
         shape_vocab=shape_vocab,
         property_scaler=property_scaler,
         reward_computer=reward_computer,
+        target_protein=target,
     )
     print(f"  ✓ Environment initialized")
     print(f"    - Observation space: {env.observation_space.shape}")
@@ -230,7 +234,7 @@ def run_episode(env, agent, reward_computer, replay_buffer, episode_num, trainin
     return episode_info
 
 
-def train(num_episodes=NUM_EPISODES, resume_from=None, batch_size_sac=BATCH_SIZE_SAC):
+def train(num_episodes=NUM_EPISODES, resume_from=None, batch_size_sac=BATCH_SIZE_SAC, target='parp1'):
     """
     Main training loop.
     
@@ -248,7 +252,7 @@ def train(num_episodes=NUM_EPISODES, resume_from=None, batch_size_sac=BATCH_SIZE
     
     # Initialize Stage 2 components
     env, agent, replay_buffer, reward_computer = initialize_training(
-        hes_model, motif_vocab, shape_vocab, property_scaler
+        hes_model, motif_vocab, shape_vocab, property_scaler, target=target
     )
     
     # Resume if checkpoint provided
@@ -263,6 +267,7 @@ def train(num_episodes=NUM_EPISODES, resume_from=None, batch_size_sac=BATCH_SIZE
     print(f"\nConfiguration:")
     print(f"  - Episodes: {num_episodes}")
     print(f"  - Batch size: {batch_size_sac}")
+    print(f"  - Target protein: {target}")
     print(f"  - Learning starts: {LEARN_STARTS} steps")
     print(f"  - Device: {DEVICE}")
     print(f"  - Max steps per episode: {MAX_STEPS_PER_EPISODE}")
@@ -303,7 +308,7 @@ def train(num_episodes=NUM_EPISODES, resume_from=None, batch_size_sac=BATCH_SIZE
             
             # Save checkpoint
             if (episode + 1) % SAVE_INTERVAL == 0:
-                checkpoint_path = CHECKPOINT_DIR / f"agent_ep{episode+1:06d}.pt"
+                checkpoint_path = CHECKPOINT_DIR / f"agent_{target}_ep{episode+1:06d}.pt"
                 agent.save(checkpoint_path)
                 print(f"[✓] Saved checkpoint at episode {episode+1}")
             
@@ -329,7 +334,7 @@ def train(num_episodes=NUM_EPISODES, resume_from=None, batch_size_sac=BATCH_SIZE
                 
                 if eval_avg > best_eval_reward:
                     best_eval_reward = eval_avg
-                    checkpoint_path = CHECKPOINT_DIR / "agent_best.pt"
+                    checkpoint_path = CHECKPOINT_DIR / f"agent_{target}_best.pt"
                     agent.save(checkpoint_path)
                     print(f"    [🌟] New best model saved with evaluation reward: {best_eval_reward:.3f}\n")
                 else:
@@ -345,7 +350,7 @@ def train(num_episodes=NUM_EPISODES, resume_from=None, batch_size_sac=BATCH_SIZE
     
     finally:
         # Save final checkpoint
-        final_checkpoint = CHECKPOINT_DIR / f"agent_final.pt"
+        final_checkpoint = CHECKPOINT_DIR / f"agent_{target}_final.pt"
         agent.save(final_checkpoint)
         
         # Summary
@@ -370,6 +375,7 @@ if __name__ == "__main__":
     parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint")
     parser.add_argument("--seed", type=int, default=SEED, help="Random seed")
     parser.add_argument("--batch-size-sac", type=int, default=BATCH_SIZE_SAC, help="SAC replay sample batch size")
+    parser.add_argument("--target", type=str, default="parp1", choices=TARGET_CHOICES, help="Target protein for single-agent training")
     
     args = parser.parse_args()
     
@@ -377,4 +383,5 @@ if __name__ == "__main__":
         num_episodes=args.episodes,
         resume_from=args.resume,
         batch_size_sac=args.batch_size_sac,
+        target=args.target,
     )
