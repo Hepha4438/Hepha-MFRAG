@@ -326,9 +326,9 @@ class MoleculeEnv(gym.Env):
                 a2_bond[b_idx, e_idx] = bond_type_idx
                 a2_bond[e_idx, b_idx] = bond_type_idx
                 
-        # Replace the agent's actions with ground truth, flattening bond array
+        # Replace the agent's actions with ground truth, keeping the 2D bond array
         action['a2_atom'] = a2_atom
-        action['a2_bond'] = a2_bond.flatten()
+        action['a2_bond'] = a2_bond
 
 
     def _phase_A1(self, a1: int, a2: int, a3: int):
