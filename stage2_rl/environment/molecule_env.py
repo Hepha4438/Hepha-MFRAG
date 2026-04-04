@@ -49,7 +49,7 @@ class MoleculeEnv(gym.Env):
     - Terminal reward: property changes from start to end
     """
     
-    def __init__(self, hes_model, motif_vocab, shape_vocab, property_scaler, reward_computer=None, target_protein: str = "parp1"):
+    def __init__(self, hes_model, motif_vocab, shape_vocab, shape_templates, property_scaler, reward_computer=None, target_protein: str = "parp1", warmup_episodes: int = WARMUP_EPISODES):
         """
         Initialize environment.
         
@@ -57,6 +57,8 @@ class MoleculeEnv(gym.Env):
             hes_model: Loaded Stage 1 HES model
             motif_vocab: dict{smiles → ecfp_array}
             shape_vocab: dict{shape_hash → {motifs, count, avg_ecfp}}
+            shape_templates: dict{shape_hash → list of config dicts}
+            warmup_episodes: Number of episodes to use template-guided warmup
             property_scaler: Fitted StandardScaler for property normalization
             reward_computer: RewardComputer instance (will be created if None)
             target_protein: Target protein for single-target reward optimization
@@ -66,7 +68,12 @@ class MoleculeEnv(gym.Env):
         self.hes_model = hes_model
         self.motif_vocab = motif_vocab
         self.shape_vocab = shape_vocab
+        self.shape_templates = shape_templates
         self.property_scaler = property_scaler
+        self.warmup_episodes = warmup_episodes
+        
+        self.current_episode_num = 0
+        self.is_training = False
         
         # Initialize reward computer if not provided
         if reward_computer is None:
@@ -118,6 +125,8 @@ class MoleculeEnv(gym.Env):
             'a1': spaces.Discrete(MAX_ATOMS_PER_MOLECULE + 1),       # attachment point + STOP
             'a2': spaces.Discrete(self.num_shapes),                   # shape
             'a3': spaces.Discrete(4),                                 # orientation (4 angles)
+            'a2_atom': spaces.MultiDiscrete([len(ATOM_TYPES)] * MAX_ATOMS_PER_MOLECULE),
+            'a2_bond': spaces.MultiDiscrete([4] * (MAX_ATOMS_PER_MOLECULE * MAX_ATOMS_PER_MOLECULE)),
         })
         
         # Current molecular structures
@@ -128,6 +137,11 @@ class MoleculeEnv(gym.Env):
         self.generated_motifs = []           # List of added motifs
         self.episode_step = 0
         self.junction_atom_idx = None        # Index of junction atom for current motif (not predicted in A2)
+        
+    def set_episode(self, current_episode_num: int, training: bool = True):
+        """Set current episode number and mode, primarily used for warmup strategy."""
+        self.current_episode_num = current_episode_num
+        self.is_training = training
         
     def reset(self, initial_smiles=None):
         """
@@ -215,6 +229,10 @@ class MoleculeEnv(gym.Env):
         self.junction_atom_idx = junction_atom_idx  # Store for Phase A2
         reward += reward_A1
         
+        # --- WARMUP STRATEGY ---
+        if self.is_training and self.current_episode_num < self.warmup_episodes:
+            self._extract_warmup_actions(a2, n_scaffold_atoms, action)
+        
         # Phase A2: Atom and bond labeling
         a2_atom_actions = action.get('a2_atom')
         a2_bond_actions = action.get('a2_bond')
@@ -253,6 +271,63 @@ class MoleculeEnv(gym.Env):
         
         return obs, reward, done, info
     
+    def _extract_warmup_actions(self, a2: int, n_scaffold_atoms: int, action: Dict[str, Any]):
+        """
+        Extract ground-truth atoms and bonds for the chosen shape using precomputed templates.
+        This provides perfect labels during warmup episodes to accelerate critic learning.
+        Forces the 'action' dict to reflect these ground-truth labels.
+        """
+        import random
+        
+        # Get shape hash using index
+        shape_hashes = list(self.shape_vocab.keys())
+        if a2 >= len(shape_hashes):
+            return
+            
+        shape_hash = shape_hashes[a2]
+        templates = self.shape_templates.get(shape_hash, [])
+        if not templates:
+            return
+            
+        # FIX 2: Use deterministic template to align correctly with motifs[0] topoplogy order
+        template = templates[0]
+        
+        # Prepare action arrays
+        a2_atom = np.zeros(MAX_ATOMS_PER_MOLECULE, dtype=np.int64)
+        a2_bond = np.zeros((MAX_ATOMS_PER_MOLECULE, MAX_ATOMS_PER_MOLECULE), dtype=np.int64)
+        
+        # Mappers matching environment expectations
+        atom_types = list(ATOM_TYPES.values())
+        num_to_idx = {num: i for i, num in enumerate(atom_types)}
+        
+        rdkit_to_idx = {
+            Chem.BondType.SINGLE: 0,
+            Chem.BondType.DOUBLE: 1,
+            Chem.BondType.TRIPLE: 2,
+            Chem.BondType.AROMATIC: 3
+        }
+        
+        # Map atoms
+        for i, atom_num in enumerate(template['atoms']):
+            new_idx = n_scaffold_atoms + i
+            if new_idx < MAX_ATOMS_PER_MOLECULE:
+                a2_atom[new_idx] = num_to_idx.get(atom_num, 0)
+                
+        # Map bonds
+        for bond in template['bonds']:
+            b_idx = n_scaffold_atoms + bond['begin']
+            e_idx = n_scaffold_atoms + bond['end']
+            
+            if b_idx < MAX_ATOMS_PER_MOLECULE and e_idx < MAX_ATOMS_PER_MOLECULE:
+                bond_type_idx = rdkit_to_idx.get(bond['type'], 0)
+                a2_bond[b_idx, e_idx] = bond_type_idx
+                a2_bond[e_idx, b_idx] = bond_type_idx
+                
+        # Replace the agent's actions with ground truth
+        action['a2_atom'] = a2_atom
+        action['a2_bond'] = a2_bond.flatten()
+
+
     def _phase_A1(self, a1: int, a2: int, a3: int):
         """
         Phase A1: Scaffold extension via attachment, shape selection, and orientation.
@@ -271,8 +346,6 @@ class MoleculeEnv(gym.Env):
         # Validate attachment point
         if a1 >= self.scaffold_molecule.GetNumAtoms():
             return None
-        
-        junction_atom_idx = a1  # Save attachment point for Phase A2 constraint
         
         # Select motif from shape
         if a2 >= self.num_shapes:
@@ -293,28 +366,29 @@ class MoleculeEnv(gym.Env):
             
             # 2. Tính toán Index
             n_scaffold_atoms = self.scaffold_molecule.GetNumAtoms()
-            junction_atom_on_motif = a3 % motif_mol.GetNumAtoms()
+            
+            valid_motif_pts = [atom.GetIdx() for atom in motif_mol.GetAtoms() if atom.GetImplicitValence() > 0]
+            if not valid_motif_pts:
+                return None
+            junction_atom_on_motif = valid_motif_pts[a3 % len(valid_motif_pts)]
             
             # Index của điểm gắn trên motif trong đồ thị mới (bị dịch đi n_scaffold_atoms)
             motif_attach_idx = n_scaffold_atoms + junction_atom_on_motif
             
+            # FIX 1: Track the motif-side generic atom as the junction
+            junction_atom_idx = motif_attach_idx
+            
             # Tạo liên kết đơn
             new_mol.AddBond(a1, motif_attach_idx, Chem.BondType.SINGLE)
             
-            # CHÚ Ý QUAN TRỌNG: Sửa hóa trị (Xóa 1 Hydro ngầm định ở mỗi đầu nối nếu có thể)
-            atom1 = new_mol.GetAtomWithIdx(a1)
-            atom2 = new_mol.GetAtomWithIdx(motif_attach_idx)
-            
-            if atom1.GetNumExplicitHs() > 0:
-                atom1.SetNumExplicitHs(atom1.GetNumExplicitHs() - 1)
-            if atom2.GetNumExplicitHs() > 0:
-                atom2.SetNumExplicitHs(atom2.GetNumExplicitHs() - 1)
-                
             # Yêu cầu RDKit tự động cập nhật lại Implicit Hydrogens
             new_mol.UpdatePropertyCache(strict=False)
             
             new_mol = new_mol.GetMol()
-            Chem.SanitizeMol(new_mol, catchErrors=True)
+            # FIX 2: Rely heavily on RDKit Sanitize to fix explicit hydrogens safely
+            status = Chem.SanitizeMol(new_mol, sanitizeOps=Chem.SanitizeFlags.SANITIZE_ALL, catchErrors=True)
+            if status != Chem.SanitizeFlags.SANITIZE_NONE:
+                return None
             
             # Compute reward using RewardComputer
             reward = self.reward_computer.compute_reward_A1(self.scaffold_molecule, new_mol)
@@ -344,6 +418,15 @@ class MoleculeEnv(gym.Env):
             atom_nums = list(ATOM_TYPES.values())
             idx_to_num = {i: num for i, num in enumerate(atom_nums)}
             
+            # Blank slate the motif
+            for atom_idx in range(n_scaffold_atoms, new_mol.GetNumAtoms()):
+                if atom_idx != self.junction_atom_idx:
+                    new_mol.GetAtomWithIdx(atom_idx).SetAtomicNum(6)
+            for bond in new_mol.GetBonds():
+                if bond.GetBeginAtomIdx() >= n_scaffold_atoms and bond.GetEndAtomIdx() >= n_scaffold_atoms:
+                    bond.SetBondType(Chem.BondType.SINGLE)
+            new_mol.UpdatePropertyCache(strict=False)
+            
             # ===== ATOM LABELING =====
             # ONLY iterate over newly added atoms
             for atom_idx in range(n_scaffold_atoms, new_mol.GetNumAtoms()):
@@ -359,7 +442,7 @@ class MoleculeEnv(gym.Env):
                     if allowed_atoms:
                         if a2_atom_actions is not None and atom_idx < MAX_ATOMS_PER_MOLECULE:
                             action_idx = a2_atom_actions[atom_idx]
-                            pred_atom_num = idx_to_num.get(action_idx, 6)
+                            pred_atom_num = idx_to_num.get(int(action_idx), 6)
                             
                             if pred_atom_num in allowed_atoms:
                                 atom.SetAtomicNum(pred_atom_num)
@@ -397,8 +480,15 @@ class MoleculeEnv(gym.Env):
                     
                     if allowed_bonds:
                         if a2_bond_actions is not None and begin_idx < MAX_ATOMS_PER_MOLECULE and end_idx < MAX_ATOMS_PER_MOLECULE:
-                            action_idx = a2_bond_actions[begin_idx, end_idx]
-                            pred_bond_type = idx_to_rdkit.get(action_idx, Chem.BondType.SINGLE)
+                            # FIX 3: Robustly handle 1D and 2D bond action tensors
+                            bond_actions_arr = np.asarray(a2_bond_actions)
+                            if bond_actions_arr.ndim == 1:
+                                flat_idx = begin_idx * MAX_ATOMS_PER_MOLECULE + end_idx
+                                action_idx = bond_actions_arr[flat_idx]
+                            else:
+                                action_idx = bond_actions_arr[begin_idx, end_idx]
+                            
+                            pred_bond_type = idx_to_rdkit.get(int(action_idx), Chem.BondType.SINGLE)
                             
                             if pred_bond_type in allowed_bonds:
                                 bond.SetBondType(pred_bond_type)
@@ -415,7 +505,9 @@ class MoleculeEnv(gym.Env):
             
             # Finalize molecule
             new_mol = new_mol.GetMol()
-            Chem.SanitizeMol(new_mol, catchErrors=True)
+            status = Chem.SanitizeMol(new_mol, catchErrors=True)
+            if status != Chem.SanitizeFlags.SANITIZE_NONE:
+                return valency_penalty, None
             
             # Compute reward using RewardComputer
             reward = self.reward_computer.compute_reward_A2(scaffold_mol, new_mol)
@@ -470,8 +562,9 @@ class MoleculeEnv(gym.Env):
             begin_atom = mol.GetAtomWithIdx(bond.GetBeginAtomIdx())
             end_atom = mol.GetAtomWithIdx(bond.GetEndAtomIdx())
             
-            begin_valence = begin_atom.GetImplicitValence()
-            end_valence = end_atom.GetImplicitValence()
+            old_bond_val = bond.GetBondTypeAsDouble()
+            begin_valence = begin_atom.GetImplicitValence() + old_bond_val
+            end_valence = end_atom.GetImplicitValence() + old_bond_val
             
             # Single bond: uses 1 valence from each atom
             if begin_valence >= 1 and end_valence >= 1:

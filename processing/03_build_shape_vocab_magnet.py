@@ -61,7 +61,7 @@ def build_shape_vocabulary_from_motifs(motif_vocab, max_motifs=None):
         max_motifs: optional max number of motifs to process
         
     Returns:
-        dict mapping topology_hash to {'motifs': [...], 'count': N, 'avg_ecfp': [...]}
+        tuple: (shape_vocab, shape_templates)
     """
     shape_groups = defaultdict(list)
     shape_ecfps = defaultdict(list)
@@ -89,8 +89,10 @@ def build_shape_vocabulary_from_motifs(motif_vocab, max_motifs=None):
         except Exception:
             continue
     
-    # Compute average ECFP per shape
+    # Compute average ECFP per shape and extract templates
     shape_vocab = {}
+    shape_templates = defaultdict(list)
+    
     for shape_hash, motifs in shape_groups.items():
         unique_motifs = list(set(motifs))
         
@@ -105,9 +107,28 @@ def build_shape_vocabulary_from_motifs(motif_vocab, max_motifs=None):
             'count': len(motifs),
             'avg_ecfp': avg_ecfp
         }
+        
+        # Extract templates for this shape
+        seen_configs = set()
+        for motif_smiles in unique_motifs:
+            try:
+                mol = Chem.MolFromSmiles(motif_smiles)
+                if mol is None:
+                    continue
+                atoms = tuple(atom.GetAtomicNum() for atom in mol.GetAtoms())
+                bonds = tuple(sorted((bond.GetBeginAtomIdx(), bond.GetEndAtomIdx(), int(bond.GetBondTypeAsDouble())) for bond in mol.GetBonds()))
+                config_hash = hash((atoms, bonds))
+                if config_hash not in seen_configs:
+                    seen_configs.add(config_hash)
+                    shape_templates[shape_hash].append({
+                        'atoms': [atom.GetAtomicNum() for atom in mol.GetAtoms()],
+                        'bonds': [{'begin': bond.GetBeginAtomIdx(), 'end': bond.GetEndAtomIdx(), 'type': bond.GetBondType()} for bond in mol.GetBonds()]
+                    })
+            except Exception:
+                continue
     
     print(f"Built shape vocabulary with {len(shape_vocab)} unique shapes")
-    return shape_vocab
+    return shape_vocab, dict(shape_templates)
 
 
 
@@ -136,18 +157,23 @@ def main():
     
     # Build shape vocabulary from motifs
     print(f"[2/2] Building shape vocabulary by grouping motifs by topology...")
-    shape_vocab = build_shape_vocabulary_from_motifs(motif_vocab)
+    shape_vocab, shape_templates = build_shape_vocabulary_from_motifs(motif_vocab)
     
     
     # Save vocabulary
     output_path = output_dir / "shape_vocab.pkl"
     with open(output_path, 'wb') as f:
         pickle.dump(shape_vocab, f)
+        
+    templates_path = output_dir / "shape_templates.pkl"
+    with open(templates_path, 'wb') as f:
+        pickle.dump(shape_templates, f)
     
     print("=" * 80)
     print("Step 3 Complete!")
     print("=" * 80)
     print(f"Output: {output_path}")
+    print(f"Templates Output: {templates_path}")
     print(f"Shapes: {len(shape_vocab)}")
     print()
 

@@ -14,6 +14,7 @@ GRAPHS_DIR = DATA_OUTPUT_DIR / "graphs"
 PROPERTIES_CSV = DATA_OUTPUT_DIR / "properties.csv"
 MOTIF_VOCAB_PATH = DATA_OUTPUT_DIR / "vocabularies/motif_vocab.pkl"
 SHAPE_VOCAB_PATH = DATA_OUTPUT_DIR / "vocabularies/shape_vocab.pkl"
+SHAPE_TEMPLATES_PATH = DATA_OUTPUT_DIR / "vocabularies/shape_templates.pkl"
 
 # Stage 2 output directory
 STAGE2_OUTPUT = PROJECT_ROOT / "stage2_rl"
@@ -88,6 +89,7 @@ LEARN_STARTS = 1000   # Start SAC training after this many env steps
 
 # ===== Training Configuration =====
 NUM_EPISODES = 10000
+WARMUP_EPISODES = 1000
 MAX_STEPS_PER_EPISODE = 20      # Usually ends earlier due to STOP action
 NUM_UPDATES_PER_STEP = 1        # SAC updates per environment step
 

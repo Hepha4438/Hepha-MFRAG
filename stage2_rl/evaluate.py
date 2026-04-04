@@ -63,81 +63,67 @@ def load_seed_smiles(path):
         print(f"Warning: Could not load evaluation seed SMILES: {e}")
     return seed_smiles
 
-def evaluate():
-    parser = argparse.ArgumentParser(description="Evaluate Stage 2 SAC Agent")
-    parser.add_argument("--num-samples", type=int, default=1000, help="Number of molecules to generate")
-    parser.add_argument("--checkpoint", type=str, default=None, help="Agent checkpoint (optional override)")
-    parser.add_argument("--output", type=str, default="evaluation_results.csv", help="Output CSV file")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--target", type=str, default="parp1", choices=TARGET_CHOICES, help="Target protein for agent/evaluation")
-    args = parser.parse_args()
-    
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    
-    print("=" * 80)
-    print("EVALUATING M-FRAG SAC AGENT")
-    print("=" * 80)
-    
-    # 1. Setup Environment and Agent
-    hes_model, motif_vocab, shape_vocab, property_scaler = load_stage1_components()
+
+def evaluate_single_target(target, args, hes_model, motif_vocab, shape_vocab, property_scaler, reference_dataset, seed_smiles_all):
+    """Run evaluation for one target-specific agent."""
     env, agent, replay_buffer, reward_computer = initialize_training(
-        hes_model, motif_vocab, shape_vocab, property_scaler, target=args.target
+        hes_model, motif_vocab, shape_vocab, property_scaler, target=target
     )
 
-    checkpoint_path = args.checkpoint if args.checkpoint else str(PROJECT_ROOT / f"stage2_rl/checkpoints/agent_{args.target}_final.pt")
-    
-    if os.path.exists(checkpoint_path):
-        agent.load(checkpoint_path)
-        print(f"[✓] Loaded agent from {checkpoint_path}")
+    if args.checkpoint:
+        checkpoint_candidates = [
+            args.checkpoint.format(target=target) if "{target}" in args.checkpoint else args.checkpoint
+        ]
     else:
-        print(f"[x] Checkpoint not found at {checkpoint_path}!")
-        return
-        
-    reference_data_path = PROJECT_ROOT / "data/smiles/zinc250k/zinc250k.smi"
-    reference_dataset = load_training_dataset(reference_data_path)
-    seed_smiles_all = load_seed_smiles(reference_data_path)
-    print(f"Loaded {len(reference_dataset)} reference SMILES.")
-    print(f"Loaded {len(seed_smiles_all)} seed SMILES for evaluation reset.")
-    if not seed_smiles_all:
-        print("[x] No seed SMILES available for evaluation reset.")
-        return
-    
+        checkpoint_candidates = [
+            str(PROJECT_ROOT / f"stage2_rl/checkpoints/agent_{target}_final.pt"),
+            str(PROJECT_ROOT / f"stage2_rl/checkpoints/agent_{target}_best.pt"),
+        ]
+
+    checkpoint_path = None
+    for candidate in checkpoint_candidates:
+        if os.path.exists(candidate):
+            checkpoint_path = candidate
+            break
+
+    if checkpoint_path is None:
+        print(f"[x] Checkpoint not found. Tried: {checkpoint_candidates}")
+        return None
+
+    agent.load(checkpoint_path)
+    print(f"[✓] Loaded agent from {checkpoint_path}")
+
     docking_proteins = TARGET_CHOICES
-    
     generated_smiles = []
     seed_indices = np.random.choice(len(seed_smiles_all), size=args.num_samples, replace=len(seed_smiles_all) < args.num_samples)
     eval_seed_smiles = [seed_smiles_all[i] for i in seed_indices]
-    
-    # Generation loop
-    print(f"\nGenerating {args.num_samples} molecules...")
+
+    print(f"\nGenerating {args.num_samples} molecules for {target}...")
     for initial_smiles in tqdm(eval_seed_smiles):
         state = env.reset(initial_smiles=initial_smiles)
         done = False
         step_count = 0
-        
+
         while not done and step_count < 20: # MAX_STEPS_PER_EPISODE
             action_mask = env.get_action_mask()
-            # USE STOCHASTIC POLICY (training=True) TO SAMPLE DIVERSE MOLECULES
-            # If training=False, it uses the greedy deterministic action and always generates the exact same molecule!
-            action = agent.select_action(state, training=True, action_mask=action_mask)
+            action = agent.select_action(state, training=False, action_mask=action_mask)
             next_state, reward, done, info = env.step(action)
             state = next_state
             step_count += 1
-            
+
         final_smiles = info.get("final_smiles", None)
         if final_smiles is None and hasattr(env, "molecule_smiles"):
             final_smiles = env.molecule_smiles
-            
+
         if final_smiles:
             generated_smiles.append(final_smiles)
-            
+
     # Compute Metrics
-    print("\nComputing metrics...")
+    print(f"\nComputing metrics for {target}...")
     valid_count = 0
     valid_mols = []
     valid_smiles_list = []
-    
+
     for s in generated_smiles:
         try:
             mol = Chem.MolFromSmiles(s)
@@ -149,49 +135,44 @@ def evaluate():
                 valid_smiles_list.append(canon_s)
         except:
             pass
-            
+
     validity = valid_count / args.num_samples if args.num_samples > 0 else 0
     unique_smiles = set(valid_smiles_list)
     uniqueness = len(unique_smiles) / valid_count if valid_count > 0 else 0
-    
+
     novel_smiles = unique_smiles - reference_dataset
     novelty = len(novel_smiles) / len(unique_smiles) if len(unique_smiles) > 0 else 0
-    
+
     results = []
-    
+
     print("Calculating properties for valid molecules...")
-    
-    # Batch compute docking scores for all molecules at once (more efficient than per-molecule)
     print("  [1/2] Computing batch docking scores...")
     df_docking = get_proxy_docking_scores(valid_smiles_list, docking_proteins)
-    # Convert docking scores to dict for fast lookup: {smiles: {target: score}}
     docking_dict = {}
-    for idx, row in df_docking.iterrows():
+    for _, row in df_docking.iterrows():
         smiles = row['smiles']
         docking_dict[smiles] = {prot: row[f'docking_{prot}'] for prot in docking_proteins}
-    
+
     print("  [2/2] Computing molecular properties...")
     for s, mol in tqdm(zip(valid_smiles_list, valid_mols), total=len(valid_mols)):
         qed_val = QED.qed(mol)
         sa_val = compute_sa_reward(mol)
-        
+
         row = {
             "SMILES": s,
             "QED": qed_val,
             "SA": sa_val
         }
-        
-        # Add docking scores from batch computation
+
         if s in docking_dict:
             for prot in docking_proteins:
                 row[f"Docking_{prot}"] = docking_dict[s][prot]
         else:
-            # Fallback: set default scores if not found
             for prot in docking_proteins:
                 row[f"Docking_{prot}"] = -6.0
-            
+
         results.append(row)
-        
+
     df_results = pd.DataFrame(results)
     if not df_results.empty:
         avg_qed = df_results["QED"].mean()
@@ -201,10 +182,9 @@ def evaluate():
         avg_qed = 0.0
         avg_sa = 0.0
         avg_docking = {prot: 0.0 for prot in docking_proteins}
-        
-    # Output
+
     print("\n" + "="*50)
-    print("Evaluation Results")
+    print(f"Evaluation Results [{target}]")
     print("="*50)
     print(f"Total requested     : {args.num_samples}")
     print(f"Validity            : {validity*100:.2f}%")
@@ -217,9 +197,94 @@ def evaluate():
     for prot in docking_proteins:
         print(f"Average Docking {prot.upper():<5}: {avg_docking[prot]:.4f}")
     print("="*50)
+
+    if args.target == 'all' or args.output is None:
+        os.makedirs(args.output_dir, exist_ok=True)
+        output_path = os.path.join(args.output_dir, f"evaluation_results_{target}.csv")
+    else:
+        output_path = args.output
+        parent = os.path.dirname(output_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+
+    df_results.to_csv(output_path, index=False)
+    print(f"\nAll valid generated SMILES and properties saved to {output_path}")
+
+    return {
+        "target": target,
+        "output_path": output_path,
+        "validity": validity,
+        "uniqueness": uniqueness,
+        "novelty": novelty,
+        "avg_qed": avg_qed,
+        "avg_sa": avg_sa,
+    }
+
+def evaluate():
+    parser = argparse.ArgumentParser(description="Evaluate Stage 2 SAC Agent")
+    parser.add_argument("--num-samples", type=int, default=1000, help="Number of molecules to generate")
+    parser.add_argument("--checkpoint", type=str, default=None, help="Agent checkpoint (optional override)")
+    parser.add_argument("--output", type=str, default=None, help="Output CSV file (single target mode)")
+    parser.add_argument("--output-dir", type=str, default="stage2_rl", help="Output directory for --target all")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--target", type=str, default="parp1", choices=TARGET_CHOICES + ['all'], help="Target protein for agent/evaluation")
+    args = parser.parse_args()
     
-    df_results.to_csv(args.output, index=False)
-    print(f"\nAll valid generated SMILES and properties saved to {args.output}")
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    
+    print("=" * 80)
+    print("EVALUATING M-FRAG SAC AGENT")
+    print("=" * 80)
+    
+    # 1. Setup Stage 1 components
+    hes_model, motif_vocab, shape_vocab, property_scaler = load_stage1_components()
+        
+    reference_data_path = PROJECT_ROOT / "data/smiles/zinc250k/zinc250k.smi"
+    reference_dataset = load_training_dataset(reference_data_path)
+    seed_smiles_all = load_seed_smiles(reference_data_path)
+    print(f"Loaded {len(reference_dataset)} reference SMILES.")
+    print(f"Loaded {len(seed_smiles_all)} seed SMILES for evaluation reset.")
+    if not seed_smiles_all:
+        print("[x] No seed SMILES available for evaluation reset.")
+        return
+
+    if args.target == 'all':
+        summaries = []
+        for target in TARGET_CHOICES:
+            print("\n" + "#" * 80)
+            print(f"RUNNING EVALUATION FOR TARGET: {target.upper()}")
+            print("#" * 80)
+            summary = evaluate_single_target(
+                target,
+                args,
+                hes_model,
+                motif_vocab,
+                shape_vocab,
+                property_scaler,
+                reference_dataset,
+                seed_smiles_all,
+            )
+            if summary is not None:
+                summaries.append(summary)
+
+        if summaries:
+            summary_df = pd.DataFrame(summaries)
+            os.makedirs(args.output_dir, exist_ok=True)
+            summary_path = os.path.join(args.output_dir, "evaluation_summary_all_targets.csv")
+            summary_df.to_csv(summary_path, index=False)
+            print(f"\nSaved all-target summary to {summary_path}")
+    else:
+        evaluate_single_target(
+            args.target,
+            args,
+            hes_model,
+            motif_vocab,
+            shape_vocab,
+            property_scaler,
+            reference_dataset,
+            seed_smiles_all,
+        )
 
 if __name__ == "__main__":
     evaluate()

@@ -61,6 +61,10 @@ def load_stage1_components():
         shape_vocab = pickle.load(f)
     print(f"  ✓ Loaded {len(shape_vocab)} shapes")
     
+    with open(SHAPE_TEMPLATES_PATH, 'rb') as f:
+        shape_templates = pickle.load(f)
+    print(f"  ✓ Loaded {len(shape_templates)} shape templates")
+    
     # Load HES model
     print("\n[3/3] Loading HES model...")
     if STAGE1_CHECKPOINT.exists():
@@ -87,10 +91,10 @@ def load_stage1_components():
         hes_model = None
     
     print("\n" + "-"*80)
-    return hes_model, motif_vocab, shape_vocab, property_scaler
+    return hes_model, motif_vocab, shape_vocab, shape_templates, property_scaler
 
 
-def initialize_training(hes_model, motif_vocab, shape_vocab, property_scaler, target="parp1"):
+def initialize_training(hes_model, motif_vocab, shape_vocab, shape_templates, property_scaler, target="parp1", warmup_episodes=WARMUP_EPISODES):
     """Initialize environment, agent, and reward computer."""
     print("\n" + "="*80)
     print("INITIALIZING STAGE 2 TRAINING")
@@ -134,6 +138,8 @@ def initialize_training(hes_model, motif_vocab, shape_vocab, property_scaler, ta
         hes_model=hes_model,
         motif_vocab=motif_vocab,
         shape_vocab=shape_vocab,
+        shape_templates=shape_templates,
+        warmup_episodes=warmup_episodes,
         property_scaler=property_scaler,
         reward_computer=reward_computer,
         target_protein=target,
@@ -188,6 +194,8 @@ def run_episode(env, agent, reward_computer, replay_buffer, episode_num, trainin
         'errors': [],
     }
     
+    env.set_episode(episode_num, training=training)
+    
     while not done and episode_length < MAX_STEPS_PER_EPISODE:
         # Get valid action mask
         action_mask = env.get_action_mask()
@@ -234,7 +242,7 @@ def run_episode(env, agent, reward_computer, replay_buffer, episode_num, trainin
     return episode_info
 
 
-def train(num_episodes=NUM_EPISODES, resume_from=None, batch_size_sac=BATCH_SIZE_SAC, target='parp1'):
+def train(num_episodes=NUM_EPISODES, resume_from=None, batch_size_sac=BATCH_SIZE_SAC, target='parp1', warmup_episodes=WARMUP_EPISODES):
     """
     Main training loop.
     
@@ -248,11 +256,17 @@ def train(num_episodes=NUM_EPISODES, resume_from=None, batch_size_sac=BATCH_SIZE
     torch.manual_seed(SEED)
     
     # Load Stage 1 components
-    hes_model, motif_vocab, shape_vocab, property_scaler = load_stage1_components()
+    hes_model, motif_vocab, shape_vocab, shape_templates, property_scaler = load_stage1_components()
     
     # Initialize Stage 2 components
     env, agent, replay_buffer, reward_computer = initialize_training(
-        hes_model, motif_vocab, shape_vocab, property_scaler, target=target
+        hes_model,
+        motif_vocab,
+        shape_vocab,
+        shape_templates,
+        property_scaler,
+        target=target,
+        warmup_episodes=warmup_episodes,
     )
     
     # Resume if checkpoint provided
@@ -269,6 +283,7 @@ def train(num_episodes=NUM_EPISODES, resume_from=None, batch_size_sac=BATCH_SIZE
     print(f"  - Batch size: {batch_size_sac}")
     print(f"  - Target protein: {target}")
     print(f"  - Learning starts: {LEARN_STARTS} steps")
+    print(f"  - Warmup episodes: {warmup_episodes}")
     print(f"  - Device: {DEVICE}")
     print(f"  - Max steps per episode: {MAX_STEPS_PER_EPISODE}")
     print("\n" + "-"*80 + "\n")
@@ -376,6 +391,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=SEED, help="Random seed")
     parser.add_argument("--batch-size-sac", type=int, default=BATCH_SIZE_SAC, help="SAC replay sample batch size")
     parser.add_argument("--target", type=str, default="parp1", choices=TARGET_CHOICES, help="Target protein for single-agent training")
+    parser.add_argument("--warmup-episodes", type=int, default=WARMUP_EPISODES, help="Number of warmup episodes using template-guided A2 labels")
     
     args = parser.parse_args()
     
@@ -384,4 +400,5 @@ if __name__ == "__main__":
         resume_from=args.resume,
         batch_size_sac=args.batch_size_sac,
         target=args.target,
+        warmup_episodes=args.warmup_episodes,
     )
