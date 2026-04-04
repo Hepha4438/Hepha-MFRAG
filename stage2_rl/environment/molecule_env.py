@@ -306,16 +306,29 @@ class MoleculeEnv(gym.Env):
         max_atom_len = MAX_ATOMS_PER_MOLECULE
         max_bond_len = MAX_ATOMS_PER_MOLECULE * MAX_ATOMS_PER_MOLECULE
         
-        # We need the atoms and bonds as integer representations the Replay Buffer expects
-        mapped_atoms = [num_to_idx.get(num, 0) for num in template['atoms']]
-        padded_a2_atom = list(mapped_atoms) + [0] * (max_atom_len - len(mapped_atoms))
+        # Prepare fixed-size padded action arrays (like SAC output)
+        a2_atom = np.zeros(max_atom_len, dtype=np.int64)
+        a2_bond = np.zeros((max_atom_len, max_atom_len), dtype=np.int64)
         
-        mapped_bonds = [rdkit_to_idx.get(bond['type'], 0) for bond in template['bonds']]
-        padded_a2_bond = list(mapped_bonds) + [0] * (max_bond_len - len(mapped_bonds))
-        
-        # Replace the agent's actions with ground truth
-        action['a2_atom'] = np.array(padded_a2_atom, dtype=np.int64)
-        action['a2_bond'] = np.array(padded_a2_bond, dtype=np.int64)
+        # Map atoms to absolute indices
+        for i, atom_num in enumerate(template['atoms']):
+            new_idx = n_scaffold_atoms + i
+            if new_idx < max_atom_len:
+                a2_atom[new_idx] = num_to_idx.get(atom_num, 0)
+                
+        # Map bonds to absolute indices
+        for bond in template['bonds']:
+            b_idx = n_scaffold_atoms + bond['begin']
+            e_idx = n_scaffold_atoms + bond['end']
+            
+            if b_idx < max_atom_len and e_idx < max_atom_len:
+                bond_type_idx = rdkit_to_idx.get(bond['type'], 0)
+                a2_bond[b_idx, e_idx] = bond_type_idx
+                a2_bond[e_idx, b_idx] = bond_type_idx
+                
+        # Replace the agent's actions with ground truth, flattening bond array
+        action['a2_atom'] = a2_atom
+        action['a2_bond'] = a2_bond.flatten()
 
 
     def _phase_A1(self, a1: int, a2: int, a3: int):
