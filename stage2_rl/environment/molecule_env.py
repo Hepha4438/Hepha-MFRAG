@@ -661,7 +661,10 @@ class MoleculeEnv(gym.Env):
             if pt < MAX_ATOMS_PER_MOLECULE:
                 a1_mask_arr[pt] = 1.0
         # Stop action is index MAX_ATOMS_PER_MOLECULE
-        a1_mask_arr[-1] = 1.0
+        if len(self.generated_motifs) >= 1 or len(valid_points) == 0:
+            a1_mask_arr[-1] = 1.0
+        else:
+            a1_mask_arr[-1] = 0.0
         
         a1_mask = torch.tensor(a1_mask_arr, device=device).unsqueeze(0)  # Add batch dim
         
