@@ -49,7 +49,7 @@ class MoleculeEnv(gym.Env):
     - Terminal reward: property changes from start to end
     """
     
-    def __init__(self, hes_model, motif_vocab, shape_vocab, shape_templates, property_scaler, reward_computer=None, target_protein: str = "parp1", warmup_episodes: int = WARMUP_EPISODES):
+    def __init__(self, hes_model, motif_vocab, shape_vocab, shape_templates, shape_to_motifs, property_scaler, reward_computer=None, target_protein: str = "parp1", warmup_episodes: int = WARMUP_EPISODES):
         """
         Initialize environment.
         
