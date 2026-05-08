@@ -23,9 +23,26 @@ from stage2_rl.training.config import *
 
 # ===== Molecular Constants =====
 VALENCE_DICT = {6: 4, 7: 3, 8: 2, 16: 2, 15: 3, 9: 1, 17: 1, 35: 1, 53: 1}
-
+def load_starting_scaffolds(filepath="data/smiles/starting_scaffolds.smi"):
+    scaffolds = []
+    try:
+        # Đường dẫn tuyệt đối từ PROJECT_ROOT
+        import os
+        from pathlib import Path
+        root = Path(__file__).parent.parent.parent
+        full_path = root / filepath
+        
+        with open(full_path, "r") as f:
+            for line in f:
+                s = line.strip().split()[0]
+                if s and s != "smiles":
+                    scaffolds.append(s)
+    except Exception as e:
+        print(f"Warning: Could not load {filepath}. Using fallback.")
+        scaffolds = ["c1ccccc1", "C1CCCC1", "C1=CN=CN1", "c1ccncc1", "c1cnccc1"]
+    return scaffolds
 # Simple ring scaffolds for training initialization
-STARTING_SCAFFOLDS = ["c1ccccc1", "C1CCCC1", "C1=CN=CN1", "c1ccncc1", "c1cnccc1"]
+STARTING_SCAFFOLDS = load_starting_scaffolds()
 
 
 class MoleculeEnv(gym.Env):
@@ -160,8 +177,15 @@ class MoleculeEnv(gym.Env):
             import random
             initial_smiles = random.choice(STARTING_SCAFFOLDS)
         
-        self.molecule_smiles = initial_smiles
-        self.current_molecule = Chem.MolFromSmiles(initial_smiles)
+        self.current_molecule = Chem.MolFromSmiles(initial_smiles) if initial_smiles else None
+        
+        # Fallback to Benzene if RDKit fails to parse the SMILES or initial_smiles is None
+        if self.current_molecule is None:
+            self.current_molecule = Chem.MolFromSmiles('c1ccccc1')
+            self.molecule_smiles = 'c1ccccc1'
+        else:
+            self.molecule_smiles = initial_smiles
+            
         self.initial_molecule = self.current_molecule  # Store initial for reward
         self.scaffold_molecule = self.current_molecule  # Initially, molecule = scaffold
         self.generated_motifs = []
@@ -172,24 +196,9 @@ class MoleculeEnv(gym.Env):
         obs = self._get_hes_encoding()
         
         return obs
-    
     def step(self, action: Dict[str, int]) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
         """
         Execute one step of environment.
-        
-        Action execution flow (per specification):
-        1. Extract a1, a2, a3 from action dict
-        2. If a1 == STOP_INDEX: terminate episode (calculate terminal reward)
-        3. Otherwise: execute Phase A1 (attachment + shape + orientation)
-        4. Execute Phase A2 (atom/bond labeling)
-        5. Calculate rewards (r_A1 + r_A2)
-        6. Check termination conditions
-        
-        Args:
-            action: Dict with keys 'a1', 'a2', 'a3'
-        
-        Returns:
-            (obs, reward, done, info)
         """
         self.episode_step += 1
         
@@ -204,7 +213,6 @@ class MoleculeEnv(gym.Env):
         done = False
         
         # Check STOP action (as a1 special value) or max motifs
-        # FIXED: Use motif counter, not episode_step
         if a1 == stop_index or len(self.generated_motifs) >= MAX_MOTIFS_PER_EPISODE:
             # Episode termination: calculate terminal reward
             done = True
@@ -216,12 +224,11 @@ class MoleculeEnv(gym.Env):
         # Capture scaffold size BEFORE adding the new shape
         n_scaffold_atoms = self.scaffold_molecule.GetNumAtoms()
         
-        # Phase A1: Scaffold extension (attachment + shape + orientation)
-        # Returns: (reward, new_scaffold, junction_atom_idx) where junction_atom_idx is attachment point
+        # Phase A1: Scaffold extension
         result_A1 = self._phase_A1(a1, a2, a3)
         if result_A1 is None or len(result_A1) < 3:
             reward = -1.0
-            done = True  # <--- CRITICAL FIX: Terminate episode on invalid action
+            done = True  # Terminate episode on invalid action
             info['error'] = 'invalid_phase_A1'
             return self._get_hes_encoding(), reward, done, info
         
@@ -242,15 +249,17 @@ class MoleculeEnv(gym.Env):
         if labeled_molecule is None:
             # Invalid labeling - assign penalty
             reward += -1.0
-            done = True  # <--- CRITICAL FIX: Terminate episode on invalid labeling
+            done = True  # Terminate episode on invalid labeling
             info['error'] = 'invalid_phase_A2'
             return self._get_hes_encoding(), reward, done, info
         
+        # CRITICAL FIX: Update all references to allow sequential growth
         self.current_molecule = labeled_molecule
         self.molecule_smiles = Chem.MolToSmiles(labeled_molecule)
+        self.scaffold_molecule = labeled_molecule  # <-- Dòng cực kỳ quan trọng
         reward += reward_A2
         
-        # Track successful motif addition (Phase A1 + A2 completed)
+        # Track successful motif addition
         self.generated_motifs.append(self.molecule_smiles)
         
         # Check if molecule is valid
@@ -270,8 +279,7 @@ class MoleculeEnv(gym.Env):
         # Get next state
         obs = self._get_hes_encoding()
         
-        return obs, reward, done, info
-    
+        return obs, reward, done, info   
     def _extract_warmup_actions(self, a2: int, n_scaffold_atoms: int, action: Dict[str, Any]):
         """
         Extract ground-truth motif idx and attach node for the chosen shape to provide perfect labels.

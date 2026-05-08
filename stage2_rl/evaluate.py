@@ -240,7 +240,7 @@ def evaluate():
     # 1. Setup Stage 1 components
     hes_model, motif_vocab, shape_vocab, shape_templates, shape_to_motifs, property_scaler = load_stage1_components()
         
-    reference_data_path = PROJECT_ROOT / "data/smiles/zinc250k/zinc250k.smi"
+    reference_data_path = PROJECT_ROOT / "data/smiles/starting_scaffolds.smi"
     reference_dataset = load_training_dataset(reference_data_path)
     seed_smiles_all = load_seed_smiles(reference_data_path)
     print(f"Loaded {len(reference_dataset)} reference SMILES.")

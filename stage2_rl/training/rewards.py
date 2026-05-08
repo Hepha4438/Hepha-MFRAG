@@ -70,11 +70,11 @@ class RewardComputer:
         self.target_properties_are_normalized = target_properties_are_normalized
         self.target_protein = target_protein
         self.docking_index_map = {
-            "parp1": 3,
-            "fa7": 4,
-            "5ht1b": 5,
-            "braf": 6,
-            "jak2": 7,
+            "5ht1b": 1,
+            "braf": 2,
+            "fa7": 3,
+            "jak2": 4,
+            "parp1": 5,
         }
         if self.target_protein not in self.docking_index_map:
             raise ValueError(
@@ -248,16 +248,17 @@ class RewardComputer:
         weights = np.zeros(8)
         docking_idx = self.docking_index_map[self.target_protein]
 
-        # QED and SA
-        weights[1] = config.W_QED
-        weights[2] = config.W_SA
+        # CRITICAL FIX 2: Correct index mapping
+        # QED is at index 7, SA (SAS) is at index 0
+        weights[7] = config.W_QED
+        weights[0] = config.W_SA
         # Single docking score for selected target protein
         weights[docking_idx] = config.W_DOCKING
         
         if is_terminal:
             # Exclude QED and SA because they are computed natively by RDKit
-            weights[1] = 0.0
-            weights[2] = 0.0
+            weights[7] = 0.0
+            weights[0] = 0.0
             
         weight_sum = np.sum(weights)
         if weight_sum > 0:
