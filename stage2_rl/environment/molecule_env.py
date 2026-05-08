@@ -69,6 +69,7 @@ class MoleculeEnv(gym.Env):
         self.motif_vocab = motif_vocab
         self.shape_vocab = shape_vocab
         self.shape_templates = shape_templates
+        self.shape_to_motifs = shape_to_motifs
         self.property_scaler = property_scaler
         self.warmup_episodes = warmup_episodes
         
@@ -125,8 +126,8 @@ class MoleculeEnv(gym.Env):
             'a1': spaces.Discrete(MAX_ATOMS_PER_MOLECULE + 1),       # attachment point + STOP
             'a2': spaces.Discrete(self.num_shapes),                   # shape
             'a3': spaces.Discrete(4),                                 # orientation (4 angles)
-            'a2_atom': spaces.MultiDiscrete([len(ATOM_TYPES)] * MAX_ATOMS_PER_MOLECULE),
-            'a2_bond': spaces.MultiDiscrete([4] * (MAX_ATOMS_PER_MOLECULE * MAX_ATOMS_PER_MOLECULE)),
+            'a2_motif_idx': spaces.Discrete(MAX_MOTIFS_PER_SHAPE),
+            'a2_motif_attach': spaces.Discrete(MAX_ATOMS_PER_MOTIF),
         })
         
         # Current molecular structures
@@ -234,9 +235,9 @@ class MoleculeEnv(gym.Env):
             self._extract_warmup_actions(a2, n_scaffold_atoms, action)
         
         # Phase A2: Atom and bond labeling
-        a2_atom_actions = action.get('a2_atom')
-        a2_bond_actions = action.get('a2_bond')
-        reward_A2, labeled_molecule = self._phase_A2(self.scaffold_molecule, a2_atom_actions, a2_bond_actions, n_scaffold_atoms)
+        a2_motif_idx = action.get('a2_motif_idx')
+        a2_motif_attach = action.get('a2_motif_attach')
+        reward_A2, labeled_molecule = self._phase_A2(self.scaffold_molecule, a1, a2, a2_motif_idx, a2_motif_attach)
         
         if labeled_molecule is None:
             # Invalid labeling - assign penalty
@@ -273,252 +274,134 @@ class MoleculeEnv(gym.Env):
     
     def _extract_warmup_actions(self, a2: int, n_scaffold_atoms: int, action: Dict[str, Any]):
         """
-        Extract ground-truth atoms and bonds for the chosen shape using precomputed templates.
-        This provides perfect labels during warmup episodes to accelerate critic learning.
-        Forces the 'action' dict to reflect these ground-truth labels.
+        Extract ground-truth motif idx and attach node for the chosen shape to provide perfect labels.
+        Forces the 'action' dict to reflect a valid motif matching the joint atom.
         """
-        import random
-        
-        # Get shape hash using index
-        shape_hashes = list(self.shape_vocab.keys())
-        if a2 >= len(shape_hashes):
+        if not self.is_training or self.current_episode_num >= self.warmup_episodes:
             return
             
-        shape_hash = shape_hashes[a2]
-        templates = self.shape_templates.get(shape_hash, [])
-        if not templates:
+        a1 = action.get('a1', 0)
+        if a1 >= self.scaffold_molecule.GetNumAtoms():
             return
             
-        # FIX 2: Use deterministic template to align correctly with motifs[0] topoplogy order
-        template = templates[0]
+        joint_atom = self.scaffold_molecule.GetAtomWithIdx(a1)
+        joint_element = joint_atom.GetSymbol()
         
-        # Mappers matching environment expectations
-        atom_types = list(ATOM_TYPES.values())
-        num_to_idx = {num: i for i, num in enumerate(atom_types)}
-        
-        rdkit_to_idx = {
-            Chem.BondType.SINGLE: 0,
-            Chem.BondType.DOUBLE: 1,
-            Chem.BondType.TRIPLE: 2,
-            Chem.BondType.AROMATIC: 3
-        }
-        
-        max_atom_len = MAX_ATOMS_PER_MOLECULE
-        max_bond_len = MAX_ATOMS_PER_MOLECULE * MAX_ATOMS_PER_MOLECULE
-        
-        # Prepare fixed-size padded action arrays (like SAC output)
-        a2_atom = np.zeros(max_atom_len, dtype=np.int64)
-        a2_bond = np.zeros((max_atom_len, max_atom_len), dtype=np.int64)
-        
-        # Map atoms to absolute indices
-        for i, atom_num in enumerate(template['atoms']):
-            new_idx = n_scaffold_atoms + i
-            if new_idx < max_atom_len:
-                a2_atom[new_idx] = num_to_idx.get(atom_num, 0)
-                
-        # Map bonds to absolute indices
-        for bond in template['bonds']:
-            b_idx = n_scaffold_atoms + bond['begin']
-            e_idx = n_scaffold_atoms + bond['end']
+        if a2 not in self.shape_to_motifs:
+            return
             
-            if b_idx < max_atom_len and e_idx < max_atom_len:
-                bond_type_idx = rdkit_to_idx.get(bond['type'], 0)
-                a2_bond[b_idx, e_idx] = bond_type_idx
-                a2_bond[e_idx, b_idx] = bond_type_idx
+        candidate_motifs = self.shape_to_motifs[a2]
+        
+        # Find first motif that matches joint_element
+        valid_idx = -1
+        valid_attach = -1
+        for idx, motif in enumerate(candidate_motifs):
+            for node_idx, symbol in enumerate(motif['atoms']):
+                if symbol == joint_element:
+                    valid_idx = idx
+                    valid_attach = node_idx
+                    break
+            if valid_idx != -1:
+                break
                 
-        # Replace the agent's actions with ground truth, keeping the 2D bond array
-        action['a2_atom'] = a2_atom
-        action['a2_bond'] = a2_bond
-
+        if valid_idx != -1:
+            action['a2_motif_idx'] = valid_idx
+            action['a2_motif_attach'] = valid_attach
 
     def _phase_A1(self, a1: int, a2: int, a3: int):
         """
-        Phase A1: Scaffold extension via attachment, shape selection, and orientation.
-        
-        Formula: r_A1 = ΔR_prop = R_prop(after) - R_prop(before)
-        
-        Args:
-            a1: attachment point index (on scaffold)
-            a2: shape/motif index
-            a3: orientation angle index
-        
-        Returns:
-            (reward, new_scaffold, junction_atom_idx) or None if invalid
-            where junction_atom_idx is the attachment point on scaffold (for A2 constraint)
+        Phase A1: Dummy pass-through for fragment-based approach.
+        Graph merging is fully handled in Phase A2 via overlap.
         """
-        # Validate attachment point
         if a1 >= self.scaffold_molecule.GetNumAtoms():
             return None
-        
-        # Select motif from shape
         if a2 >= self.num_shapes:
             return None
-        
-        shape_entry = list(self.shape_vocab.values())[a2]
-        motif_smiles = shape_entry['motifs'][0]  # Take first motif of shape
-        
-        # Add motif to scaffold
-        try:
-            motif_mol = Chem.MolFromSmiles(motif_smiles)
-            if motif_mol is None:
-                return None
             
-            # 1. Gộp 2 đồ thị thành 1 đồ thị không liền kề
-            combo = Chem.CombineMols(self.scaffold_molecule, motif_mol)
-            new_mol = Chem.RWMol(combo)
-            
-            # 2. Tính toán Index
-            n_scaffold_atoms = self.scaffold_molecule.GetNumAtoms()
-            
-            valid_motif_pts = [atom.GetIdx() for atom in motif_mol.GetAtoms() if atom.GetImplicitValence() > 0]
-            if not valid_motif_pts:
-                return None
-            junction_atom_on_motif = valid_motif_pts[a3 % len(valid_motif_pts)]
-            
-            # Index của điểm gắn trên motif trong đồ thị mới (bị dịch đi n_scaffold_atoms)
-            motif_attach_idx = n_scaffold_atoms + junction_atom_on_motif
-            
-            # FIX 1: Track the motif-side generic atom as the junction
-            junction_atom_idx = motif_attach_idx
-            
-            # Tạo liên kết đơn
-            new_mol.AddBond(a1, motif_attach_idx, Chem.BondType.SINGLE)
-            
-            # Yêu cầu RDKit tự động cập nhật lại Implicit Hydrogens
-            new_mol.UpdatePropertyCache(strict=False)
-            
-            new_mol = new_mol.GetMol()
-            # FIX 2: Rely heavily on RDKit Sanitize to fix explicit hydrogens safely
-            status = Chem.SanitizeMol(new_mol, sanitizeOps=Chem.SanitizeFlags.SANITIZE_ALL, catchErrors=True)
-            if status != Chem.SanitizeFlags.SANITIZE_NONE:
-                return None
-            
-            # Compute reward using RewardComputer
-            reward = self.reward_computer.compute_reward_A1(self.scaffold_molecule, new_mol)
-            
-            return reward, new_mol, junction_atom_idx
-        except Exception as e:
-            # Bắt lỗi RDKit nếu ghép nối vi phạm hóa học
-            return None
-    
-    def _phase_A2(self, scaffold_mol, a2_atom_actions=None, a2_bond_actions=None, n_scaffold_atoms=0) -> Tuple[float, Any]:
-        """
-        Phase A2: Parallel atom and bond type labeling on new shape nodes and edges.
-        
-        Spec: Predict atom types for VACANT positions (not junction atom).
-               Predict bond types for new edges within the added shape.
-        
-        Formula: r_A2 = Δ(R_prop + w₁R_QED + w₂R_SA)
-        
-        Returns:
-            (reward, labeled_molecule) or (0, None) if invalid
-        """
-        valency_penalty = 0.0
-        try:
-            new_mol = Chem.RWMol(scaffold_mol)
-            
-            # Atom mapper
-            atom_nums = list(ATOM_TYPES.values())
-            idx_to_num = {i: num for i, num in enumerate(atom_nums)}
-            
-            # Blank slate the motif
-            for atom_idx in range(n_scaffold_atoms, new_mol.GetNumAtoms()):
-                if atom_idx != self.junction_atom_idx:
-                    new_mol.GetAtomWithIdx(atom_idx).SetAtomicNum(6)
-            for bond in new_mol.GetBonds():
-                if bond.GetBeginAtomIdx() >= n_scaffold_atoms and bond.GetEndAtomIdx() >= n_scaffold_atoms:
-                    bond.SetBondType(Chem.BondType.SINGLE)
-            new_mol.UpdatePropertyCache(strict=False)
-            
-            # ===== ATOM LABELING =====
-            # ONLY iterate over newly added atoms
-            for atom_idx in range(n_scaffold_atoms, new_mol.GetNumAtoms()):
-                # CONSTRAINT: Skip junction atom (cannot change its identity)
-                if atom_idx == self.junction_atom_idx:
-                    continue
-                
-                atom = new_mol.GetAtomWithIdx(atom_idx)
-                if atom.GetImplicitValence() > 0:
-                    # Get allowed atom types based on valency constraint
-                    allowed_atoms = self._get_allowed_atoms_by_valence(atom)
-                    
-                    if allowed_atoms:
-                        if a2_atom_actions is not None and atom_idx < MAX_ATOMS_PER_MOLECULE:
-                            action_idx = a2_atom_actions[atom_idx]
-                            pred_atom_num = idx_to_num.get(int(action_idx), 6)
-                            
-                            if pred_atom_num in allowed_atoms:
-                                atom.SetAtomicNum(pred_atom_num)
-                            else:
-                                atom.SetAtomicNum(6) # Fallback to C
-                                valency_penalty -= 0.1
-                        else:
-                            new_atom_num = np.random.choice(list(allowed_atoms))
-                            atom.SetAtomicNum(new_atom_num)
-            
-            # CRITICAL: Update cache immediately after atom labeling
-            new_mol.UpdatePropertyCache(strict=False)
+        return 0.0, self.scaffold_molecule, a1
 
-            # Bond mapper
-            idx_to_rdkit = {
-                0: Chem.BondType.SINGLE,
-                1: Chem.BondType.DOUBLE,
-                2: Chem.BondType.TRIPLE,
-                3: Chem.BondType.AROMATIC
-            }
+    def _phase_A2(self, scaffold_mol, a1: int, a2: int, a2_motif_idx: int, a2_motif_attach: int) -> Tuple[float, Any]:
+        """
+        Phase A2: Pure Fragment-Based approach.
+        1. Identify joint atom a1.
+        2. Filter valid motifs from shape a2.
+        3. Match motif node a2_motif_attach to a1.
+        4. Validate valency.
+        5. Merge graph.
+        """
+        try:
+            # 1. Identify Joint Atom
+            if a1 >= scaffold_mol.GetNumAtoms():
+                return -1.0, None
+            joint_atom = scaffold_mol.GetAtomWithIdx(a1)
+            joint_element = joint_atom.GetSymbol()
             
-            # ===== BOND LABELING =====
-            for bond in new_mol.GetBonds():
-                begin_idx = bond.GetBeginAtomIdx()
-                end_idx = bond.GetEndAtomIdx()
+            # 2. Filter Candidates for shape_idx = a2
+            if a2 not in self.shape_to_motifs:
+                return -1.0, None
                 
-                # ONLY label bonds where BOTH atoms belong to the new shape
-                if begin_idx >= n_scaffold_atoms and end_idx >= n_scaffold_atoms:
-                    # Skip if bond involves junction atom (its identity must be preserved)
-                    if begin_idx == self.junction_atom_idx or end_idx == self.junction_atom_idx:
-                        continue
-                    
-                    # Get allowed bond types based on valency
-                    allowed_bonds = self._get_allowed_bonds(new_mol, bond)
-                    
-                    if allowed_bonds:
-                        if a2_bond_actions is not None and begin_idx < MAX_ATOMS_PER_MOLECULE and end_idx < MAX_ATOMS_PER_MOLECULE:
-                            # FIX 3: Robustly handle 1D and 2D bond action tensors
-                            bond_actions_arr = np.asarray(a2_bond_actions)
-                            if bond_actions_arr.ndim == 1:
-                                flat_idx = begin_idx * MAX_ATOMS_PER_MOLECULE + end_idx
-                                action_idx = bond_actions_arr[flat_idx]
-                            else:
-                                action_idx = bond_actions_arr[begin_idx, end_idx]
-                            
-                            pred_bond_type = idx_to_rdkit.get(int(action_idx), Chem.BondType.SINGLE)
-                            
-                            if pred_bond_type in allowed_bonds:
-                                bond.SetBondType(pred_bond_type)
-                            else:
-                                bond.SetBondType(Chem.BondType.SINGLE)
-                                valency_penalty -= 0.1
-                        else:
-                            new_bond_type = np.random.choice(allowed_bonds)
-                            bond.SetBondType(new_bond_type)
-                            
-                        # CRITICAL: Update cache immediately after modifying a bond
-                        # so the next connected bond sees the correct remaining valence!
-                        new_mol.UpdatePropertyCache(strict=False)
+            candidate_motifs = self.shape_to_motifs[a2]
+            valid_motifs = [m for m in candidate_motifs if joint_element in m['atoms']]
             
-            # Finalize molecule
-            new_mol = new_mol.GetMol()
-            status = Chem.SanitizeMol(new_mol, catchErrors=True)
-            if status != Chem.SanitizeFlags.SANITIZE_NONE:
-                return valency_penalty, None
+            # BUG 1 FIX: Safe Indexing + Empty List Return
+            if not valid_motifs:
+                return -1.0, None
+            chosen_motif_idx = a2_motif_idx % len(valid_motifs)
+            motif = valid_motifs[chosen_motif_idx]
             
-            # Compute reward using RewardComputer
+            valid_attach_nodes = [i for i, symbol in enumerate(motif['atoms']) if symbol == joint_element]
+            if not valid_attach_nodes:
+                return -1.0, None
+            chosen_attach_node = valid_attach_nodes[a2_motif_attach % len(valid_attach_nodes)]
+            
+            # Convert motif string to graph
+            motif_mol = Chem.MolFromSmiles(motif['smiles'])
+            if motif_mol is None:
+                return -1.0, None
+            
+            # BUG 2 FIX: RDKit Explicit Valency Calculation
+            pt = Chem.GetPeriodicTable()
+            max_valence = pt.GetDefaultValence(joint_atom.GetAtomicNum())
+            
+            current_bonds = joint_atom.GetExplicitValence()
+            motif_attach_atom = motif_mol.GetAtomWithIdx(chosen_attach_node)
+            internal_bonds = motif_attach_atom.GetExplicitValence()
+            
+            if (current_bonds + internal_bonds) > max_valence:
+                return -1.0, None
+                
+            # BUG 3 FIX: Safe RDKit Graph Merge
+            combined = Chem.CombineMols(scaffold_mol, motif_mol)
+            rw_mol = Chem.RWMol(combined)
+            
+            offset = scaffold_mol.GetNumAtoms()
+            motif_match_idx = offset + chosen_attach_node
+            
+            # Add bonds from a1 to the neighbors of the motif's attachment node
+            for bond in motif_mol.GetBonds():
+                if bond.GetBeginAtomIdx() == chosen_attach_node:
+                    neighbor_idx = offset + bond.GetEndAtomIdx()
+                    rw_mol.AddBond(a1, neighbor_idx, bond.GetBondType())
+                elif bond.GetEndAtomIdx() == chosen_attach_node:
+                    neighbor_idx = offset + bond.GetBeginAtomIdx()
+                    rw_mol.AddBond(a1, neighbor_idx, bond.GetBondType())
+                    
+            # Safely remove the redundant motif attachment node
+            rw_mol.RemoveAtom(motif_match_idx)
+            
+            new_mol = rw_mol.GetMol()
+            try:
+                Chem.SanitizeMol(new_mol)
+            except:
+                return -1.0, None
+                
             reward = self.reward_computer.compute_reward_A2(scaffold_mol, new_mol)
+            reward_A1 = self.reward_computer.compute_reward_A1(scaffold_mol, new_mol)
+            return reward + reward_A1, new_mol
             
-            return reward + valency_penalty, new_mol
         except Exception as e:
-            return valency_penalty, None
-    
+            return -1.0, None
+
     def _get_allowed_atoms_by_valence(self, atom: Chem.Atom) -> set:
         """
         Get allowed atom types based on valency constraint.
@@ -706,6 +589,55 @@ class MoleculeEnv(gym.Env):
         Formula: r_terminal = Δ(R_prop + w₁R_QED + w₂R_SA) + validity_bonus
         """
         return self.reward_computer.compute_terminal_reward(mol_initial, mol_final)
+
+    def get_motif_idx_mask(self, a1: int, a2: int) -> np.ndarray:
+        """Get valid motifs mask for chosen attachment point and shape."""
+        # Start with all zeros
+        from stage2_rl.training.config import MAX_MOTIFS_PER_SHAPE, MAX_ATOMS_PER_MOTIF
+        mask = np.zeros(MAX_MOTIFS_PER_SHAPE, dtype=np.float32)
+        
+        if a1 >= self.scaffold_molecule.GetNumAtoms() or a2 not in self.shape_to_motifs:
+            return mask
+            
+        joint_atom = self.scaffold_molecule.GetAtomWithIdx(a1)
+        joint_element = joint_atom.GetSymbol()
+        
+        candidate_motifs = self.shape_to_motifs[a2]
+        valid_motifs = [m for m in candidate_motifs if joint_element in m['atoms']]
+        
+        if valid_motifs:
+            # All motifs within the valid_motifs array bounds are pickable
+            mask[:len(valid_motifs)] = 1.0
+            
+        return mask
+
+    def get_motif_attach_mask(self, a1: int, a2: int, a2_motif_idx: int) -> np.ndarray:
+        """Get valid attachment nodes on the chosen motif matching the scaffold element."""
+        from stage2_rl.training.config import MAX_ATOMS_PER_MOTIF
+        mask = np.zeros(MAX_ATOMS_PER_MOTIF, dtype=np.float32)
+        
+        if a1 >= self.scaffold_molecule.GetNumAtoms() or a2 not in self.shape_to_motifs:
+            return mask
+            
+        joint_atom = self.scaffold_molecule.GetAtomWithIdx(a1)
+        joint_element = joint_atom.GetSymbol()
+        
+        candidate_motifs = self.shape_to_motifs[a2]
+        valid_motifs = [m for m in candidate_motifs if joint_element in m['atoms']]
+        
+        if not valid_motifs:
+            return mask
+            
+        chosen_motif_idx = a2_motif_idx % len(valid_motifs)
+        motif = valid_motifs[chosen_motif_idx]
+        
+        valid_attach_nodes = [i for i, symbol in enumerate(motif['atoms']) if symbol == joint_element]
+        
+        for idx in valid_attach_nodes:
+            if idx < MAX_ATOMS_PER_MOTIF:
+                mask[idx] = 1.0
+                
+        return mask
 
     def get_action_mask(self) -> dict:
         """

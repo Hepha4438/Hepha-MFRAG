@@ -64,10 +64,10 @@ def load_seed_smiles(path):
     return seed_smiles
 
 
-def evaluate_single_target(target, args, hes_model, motif_vocab, shape_vocab, property_scaler, reference_dataset, seed_smiles_all):
+def evaluate_single_target(target, args, hes_model, motif_vocab, shape_vocab, shape_templates, shape_to_motifs, property_scaler, reference_dataset, seed_smiles_all):
     """Run evaluation for one target-specific agent."""
     env, agent, replay_buffer, reward_computer = initialize_training(
-        hes_model, motif_vocab, shape_vocab, property_scaler, target=target
+        hes_model, motif_vocab, shape_vocab, shape_templates, shape_to_motifs, property_scaler, target=target
     )
 
     if args.checkpoint:
@@ -106,7 +106,7 @@ def evaluate_single_target(target, args, hes_model, motif_vocab, shape_vocab, pr
 
         while not done and step_count < 20: # MAX_STEPS_PER_EPISODE
             action_mask = env.get_action_mask()
-            action = agent.select_action(state, training=False, action_mask=action_mask)
+            action = agent.select_action(state, training=False, action_mask=action_mask, env=env)
             next_state, reward, done, info = env.step(action)
             state = next_state
             step_count += 1
@@ -238,7 +238,7 @@ def evaluate():
     print("=" * 80)
     
     # 1. Setup Stage 1 components
-    hes_model, motif_vocab, shape_vocab, property_scaler = load_stage1_components()
+    hes_model, motif_vocab, shape_vocab, shape_templates, shape_to_motifs, property_scaler = load_stage1_components()
         
     reference_data_path = PROJECT_ROOT / "data/smiles/zinc250k/zinc250k.smi"
     reference_dataset = load_training_dataset(reference_data_path)
@@ -261,6 +261,8 @@ def evaluate():
                 hes_model,
                 motif_vocab,
                 shape_vocab,
+                shape_templates,
+                shape_to_motifs,
                 property_scaler,
                 reference_dataset,
                 seed_smiles_all,
@@ -281,6 +283,8 @@ def evaluate():
             hes_model,
             motif_vocab,
             shape_vocab,
+            shape_templates,
+            shape_to_motifs,
             property_scaler,
             reference_dataset,
             seed_smiles_all,

@@ -42,8 +42,8 @@ class ActorNetwork(nn.Module):
         self.a1_head = nn.Linear(hidden_dim, MAX_ATOMS_PER_MOLECULE + 1)
         self.a2_head = nn.Linear(hidden_dim, NUM_SHAPES)
         self.a3_head = nn.Linear(hidden_dim, 4)
-        self.a2_atom_head = nn.Linear(hidden_dim, MAX_ATOMS_PER_MOLECULE * NUM_ATOM_TYPES)
-        self.a2_bond_head = nn.Linear(hidden_dim, MAX_ATOMS_PER_MOLECULE * MAX_ATOMS_PER_MOLECULE * NUM_BOND_TYPES)
+        self.a2_motif_idx_head = nn.Linear(hidden_dim, MAX_MOTIFS_PER_SHAPE)
+        self.a2_motif_attach_head = nn.Linear(hidden_dim, MAX_ATOMS_PER_MOTIF)
         
     def forward(self, state: torch.Tensor, action_mask: Optional[Dict[str, torch.Tensor]] = None) -> Dict[str, torch.Tensor]:
         """
@@ -62,8 +62,8 @@ class ActorNetwork(nn.Module):
             'a1': self.a1_head(features),
             'a2': self.a2_head(features),
             'a3': self.a3_head(features),
-            'a2_atom': self.a2_atom_head(features).view(batch_size, MAX_ATOMS_PER_MOLECULE, NUM_ATOM_TYPES),
-            'a2_bond': self.a2_bond_head(features).view(batch_size, MAX_ATOMS_PER_MOLECULE, MAX_ATOMS_PER_MOLECULE, NUM_BOND_TYPES),
+            'a2_motif_idx': self.a2_motif_idx_head(features),
+            'a2_motif_attach': self.a2_motif_attach_head(features),
         }
         
         if action_mask is not None:
@@ -94,7 +94,7 @@ class ActorNetwork(nn.Module):
         action_dict = {}
         log_probs = torch.zeros(state.size(0), device=state.device)
         
-        for action_key in ['a1', 'a2', 'a3', 'a2_atom', 'a2_bond']:
+        for action_key in ['a1', 'a2', 'a3', 'a2_motif_idx', 'a2_motif_attach']:
             logits = logits_dict[action_key]
             
             # Apply temperature scaling and softmax
@@ -107,11 +107,6 @@ class ActorNetwork(nn.Module):
             action_dict[action_key] = action
             
             log_prob = dist.log_prob(action)
-            if action_key == 'a2_atom':
-                log_prob = log_prob.sum(dim=1)
-            elif action_key == 'a2_bond':
-                log_prob = log_prob.sum(dim=[1, 2])
-            
             log_probs += log_prob
         
         return action_dict, log_probs
@@ -121,7 +116,7 @@ class ActorNetwork(nn.Module):
         action_onehots = {}
         log_probs = torch.zeros(state.size(0), device=state.device)
         
-        for action_key in ['a1', 'a2', 'a3', 'a2_atom', 'a2_bond']:
+        for action_key in ['a1', 'a2', 'a3', 'a2_motif_idx', 'a2_motif_attach']:
             logits = logits_dict[action_key]
             # Differentiable one-hot sampling
             onehot = F.gumbel_softmax(logits, tau=temperature, hard=True)
@@ -133,10 +128,6 @@ class ActorNetwork(nn.Module):
             dist = torch.distributions.Categorical(probs)
             log_prob = dist.log_prob(action)
             
-            if action_key == 'a2_atom':
-                log_prob = log_prob.sum(dim=1)
-            elif action_key == 'a2_bond':
-                log_prob = log_prob.sum(dim=[1, 2])
             log_probs += log_prob
             
         return action_onehots, log_probs
@@ -155,8 +146,7 @@ class CriticNetwork(nn.Module):
         
         # Calculate action encoding size
         action_encoding_size = ((MAX_ATOMS_PER_MOLECULE + 1) + NUM_SHAPES + 4) + \
-                               (MAX_ATOMS_PER_MOLECULE * NUM_ATOM_TYPES) + \
-                               (MAX_ATOMS_PER_MOLECULE * MAX_ATOMS_PER_MOLECULE * NUM_BOND_TYPES)
+                               MAX_MOTIFS_PER_SHAPE + MAX_ATOMS_PER_MOTIF
         
         # Network: concat state and action encoding
         self.net = nn.Sequential(
@@ -171,7 +161,7 @@ class CriticNetwork(nn.Module):
         """
         Args:
             state: (batch_size, HES_ENCODING_DIM)
-            action_onehots: dict with 'a1', 'a2', 'a3', 'a2_atom', 'a2_bond' as float tensors (one-hot or soft one-hot)
+            action_onehots: dict with float tensors
         
         Returns:
             q_values: (batch_size, 1)
@@ -181,11 +171,11 @@ class CriticNetwork(nn.Module):
         a1_onehot = action_onehots['a1']
         a2_onehot = action_onehots['a2']
         a3_onehot = action_onehots['a3']
-        a2_atom_onehot = action_onehots['a2_atom'].view(batch_size, -1)
-        a2_bond_onehot = action_onehots['a2_bond'].view(batch_size, -1)
+        a2_motif_idx_onehot = action_onehots['a2_motif_idx']
+        a2_motif_attach_onehot = action_onehots['a2_motif_attach']
         
         # Concatenate action encodings
-        action_encoding = torch.cat([a1_onehot, a2_onehot, a3_onehot, a2_atom_onehot, a2_bond_onehot], dim=-1)
+        action_encoding = torch.cat([a1_onehot, a2_onehot, a3_onehot, a2_motif_idx_onehot, a2_motif_attach_onehot], dim=-1)
         
         # Concatenate state and action encoding
         state_action = torch.cat([state, action_encoding], dim=-1)
@@ -224,7 +214,7 @@ class SACAgent:
         
         # Learnable entropy coefficient
         self.log_alpha = torch.tensor(0.0, requires_grad=True, device=device)
-        self.target_entropy = -np.prod([MAX_ATOMS_PER_MOLECULE + 1, NUM_SHAPES, 4])
+        self.target_entropy = -np.prod([MAX_ATOMS_PER_MOLECULE + 1, NUM_SHAPES, 4, MAX_MOTIFS_PER_SHAPE, MAX_ATOMS_PER_MOTIF])
         
         # Optimizers
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=ACTOR_LEARNING_RATE)
@@ -232,38 +222,85 @@ class SACAgent:
         self.critic2_optimizer = torch.optim.Adam(self.critic2.parameters(), lr=CRITIC_LEARNING_RATE)
         self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=ALPHA_LEARNING_RATE)
     
-    def select_action(self, state: np.ndarray, training=True, action_mask: Optional[Dict[str, torch.Tensor]] = None) -> Dict[str, Any]:
+    def select_action(self, state: np.ndarray, training=True, action_mask: Optional[Dict[str, torch.Tensor]] = None, env=None) -> Dict[str, Any]:
         """
-        Select action given state.
-        
+        Autoregressive action selection given state.
         Args:
             state: observation (HES encoding)
             training: if True, sample stochastically; if False, use greedy action
             action_mask: dict with boolean masks for 'a1', 'a2', 'a3'
-        
+            env: environment instance for autoregressive masking steps
         Returns:
-            action_dict: dict with 'a1', 'a2', 'a3' as integers and 'a2_atom', 'a2_bond' as arrays
+            action_dict: dict with actions mapped to scalars
         """
         state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
         
         with torch.no_grad():
-            if training:
-                action_dict, _ = self.actor.sample_action(state_tensor, temperature=1.0, action_mask=action_mask)
+            logits_dict = self.actor(state_tensor)
+            action_dict = {}
+            
+            # Step 1: Base masks (a1, a2, a3). Sample a1, a2, a3.
+            for key in ['a1', 'a2', 'a3']:
+                if action_mask is not None and key in action_mask:
+                    bool_mask = action_mask[key].bool()
+                    logits_dict[key] = logits_dict[key].masked_fill(~bool_mask, -1e9)
+                    
+                if training:
+                    probs = F.softmax(logits_dict[key], dim=-1)
+                    action_dict[key] = torch.distributions.Categorical(probs).sample()
+                else:
+                    action_dict[key] = logits_dict[key].argmax(dim=-1)
+                    
+            from stage2_rl.training.config import MAX_ATOMS_PER_MOLECULE
+            a1_val = action_dict['a1'].item()
+            a2_val = action_dict['a2'].item()
+            
+            # Step 2 & 3: Autoregressive Motifs if env is provided and not stopping
+            if env is None or a1_val >= env.scaffold_molecule.GetNumAtoms():
+                # Stop action or no env provided (fallback to dummy valid integers)
+                action_dict['a2_motif_idx'] = torch.tensor([0], device=self.device)
+                action_dict['a2_motif_attach'] = torch.tensor([0], device=self.device)
             else:
-                logits_dict = self.actor(state_tensor, action_mask=action_mask)
-                action_dict = {k: v.argmax(dim=-1) for k, v in logits_dict.items()}
+                # Step 2: Env provides motif_idx mask based on a1, a2
+                motif_idx_mask = env.get_motif_idx_mask(a1_val, a2_val)
+                motif_idx_mask_t = torch.FloatTensor(motif_idx_mask).unsqueeze(0).to(self.device)
+                
+                bool_mask_idx = motif_idx_mask_t.bool()
+                logits_dict['a2_motif_idx'] = logits_dict['a2_motif_idx'].masked_fill(~bool_mask_idx, -1e9)
+                
+                if not bool_mask_idx.any():
+                    action_dict['a2_motif_idx'] = torch.tensor([0], device=self.device)
+                else:
+                    if training:
+                        probs = F.softmax(logits_dict['a2_motif_idx'], dim=-1)
+                        action_dict['a2_motif_idx'] = torch.distributions.Categorical(probs).sample()
+                    else:
+                        action_dict['a2_motif_idx'] = logits_dict['a2_motif_idx'].argmax(dim=-1)
+                        
+                # Step 3: Env provides motif_attach mask based on a1, a2, a2_motif_idx
+                motif_idx_val = action_dict['a2_motif_idx'].item()
+                motif_attach_mask = env.get_motif_attach_mask(a1_val, a2_val, motif_idx_val)
+                motif_attach_mask_t = torch.FloatTensor(motif_attach_mask).unsqueeze(0).to(self.device)
+                
+                bool_mask_attach = motif_attach_mask_t.bool()
+                logits_dict['a2_motif_attach'] = logits_dict['a2_motif_attach'].masked_fill(~bool_mask_attach, -1e9)
+                
+                if not bool_mask_attach.any():
+                    action_dict['a2_motif_attach'] = torch.tensor([0], device=self.device)
+                else:
+                    if training:
+                        probs = F.softmax(logits_dict['a2_motif_attach'], dim=-1)
+                        action_dict['a2_motif_attach'] = torch.distributions.Categorical(probs).sample()
+                    else:
+                        action_dict['a2_motif_attach'] = logits_dict['a2_motif_attach'].argmax(dim=-1)
         
         # Convert to numpy dict
         out_dict = {}
         for k, v in action_dict.items():
-            # For multi-dimensional action items (a2_atom, a2_bond), keep them as arrays
-            if v.numel() > 1:
-                out_dict[k] = v[0].cpu().numpy()
-            else:
-                out_dict[k] = v.cpu().item() if hasattr(v, 'item') else v
+            out_dict[k] = v.cpu().item() if hasattr(v, 'item') else v.cpu().numpy()
                 
         return out_dict
-    
+
     def update(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
         """
         Update actor and critic networks from a batch of experience.
@@ -287,8 +324,8 @@ class SACAgent:
             'a1': F.one_hot(actions['a1'], MAX_ATOMS_PER_MOLECULE + 1).float(),
             'a2': F.one_hot(actions['a2'], NUM_SHAPES).float(),
             'a3': F.one_hot(actions['a3'], 4).float(),
-            'a2_atom': F.one_hot(actions['a2_atom'], NUM_ATOM_TYPES).float(),
-            'a2_bond': F.one_hot(actions['a2_bond'], NUM_BOND_TYPES).float()
+            'a2_motif_idx': F.one_hot(actions['a2_motif_idx'], MAX_MOTIFS_PER_SHAPE).float(),
+            'a2_motif_attach': F.one_hot(actions['a2_motif_attach'], MAX_ATOMS_PER_MOTIF).float()
         }
         
         # --- CRITIC UPDATE ---
@@ -299,8 +336,8 @@ class SACAgent:
                 'a1': F.one_hot(next_action_dict['a1'], MAX_ATOMS_PER_MOLECULE + 1).float(),
                 'a2': F.one_hot(next_action_dict['a2'], NUM_SHAPES).float(),
                 'a3': F.one_hot(next_action_dict['a3'], 4).float(),
-                'a2_atom': F.one_hot(next_action_dict['a2_atom'], NUM_ATOM_TYPES).float(),
-                'a2_bond': F.one_hot(next_action_dict['a2_bond'], NUM_BOND_TYPES).float()
+                'a2_motif_idx': F.one_hot(next_action_dict['a2_motif_idx'], MAX_MOTIFS_PER_SHAPE).float(),
+                'a2_motif_attach': F.one_hot(next_action_dict['a2_motif_attach'], MAX_ATOMS_PER_MOTIF).float()
             }
             
             # Compute target Q-values using target networks

@@ -15,6 +15,7 @@ PROPERTIES_CSV = DATA_OUTPUT_DIR / "properties.csv"
 MOTIF_VOCAB_PATH = DATA_OUTPUT_DIR / "vocabularies/motif_vocab.pkl"
 SHAPE_VOCAB_PATH = DATA_OUTPUT_DIR / "vocabularies/shape_vocab.pkl"
 SHAPE_TEMPLATES_PATH = DATA_OUTPUT_DIR / "vocabularies/shape_templates.pkl"
+SHAPE_TO_MOTIFS_PATH = DATA_OUTPUT_DIR / "vocabularies/shape_to_motifs.pkl"
 
 # Stage 2 output directory
 STAGE2_OUTPUT = PROJECT_ROOT / "stage2_rl"
@@ -56,6 +57,8 @@ NUM_BOND_TYPES = 4
 # ===== Vocabulary Configuration =====
 NUM_MOTIFS = 7370      # From preprocessing
 NUM_SHAPES = 346       # From preprocessing
+MAX_MOTIFS_PER_SHAPE = 800  # Max motifs for any single shape
+MAX_ATOMS_PER_MOTIF = 32    # Max atoms in any single motif
 
 # ===== HES Model Configuration =====
 HES_FEATURE_DIM = 256  # Output dim of encoder_g and encoder_sc

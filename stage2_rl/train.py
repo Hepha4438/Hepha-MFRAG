@@ -65,6 +65,10 @@ def load_stage1_components():
         shape_templates = pickle.load(f)
     print(f"  ✓ Loaded {len(shape_templates)} shape templates")
     
+    with open(SHAPE_TO_MOTIFS_PATH, 'rb') as f:
+        shape_to_motifs = pickle.load(f)
+    print(f"  ✓ Loaded shape-to-motifs mapping")
+    
     # Load HES model
     print("\n[3/3] Loading HES model...")
     if STAGE1_CHECKPOINT.exists():
@@ -91,10 +95,10 @@ def load_stage1_components():
         hes_model = None
     
     print("\n" + "-"*80)
-    return hes_model, motif_vocab, shape_vocab, shape_templates, property_scaler
+    return hes_model, motif_vocab, shape_vocab, shape_templates, shape_to_motifs, property_scaler
 
 
-def initialize_training(hes_model, motif_vocab, shape_vocab, shape_templates, property_scaler, target="parp1", warmup_episodes=WARMUP_EPISODES):
+def initialize_training(hes_model, motif_vocab, shape_vocab, shape_templates, shape_to_motifs, property_scaler, target="parp1", warmup_episodes=WARMUP_EPISODES):
     """Initialize environment, agent, and reward computer."""
     print("\n" + "="*80)
     print("INITIALIZING STAGE 2 TRAINING")
@@ -138,8 +142,7 @@ def initialize_training(hes_model, motif_vocab, shape_vocab, shape_templates, pr
         hes_model=hes_model,
         motif_vocab=motif_vocab,
         shape_vocab=shape_vocab,
-        shape_templates=shape_templates,
-        warmup_episodes=warmup_episodes,
+        shape_templates=shape_templates,        shape_to_motifs=shape_to_motifs,        warmup_episodes=warmup_episodes,
         property_scaler=property_scaler,
         reward_computer=reward_computer,
         target_protein=target,
@@ -201,7 +204,7 @@ def run_episode(env, agent, reward_computer, replay_buffer, episode_num, trainin
         action_mask = env.get_action_mask()
         
         # Select and execute action
-        action = agent.select_action(state, training=training, action_mask=action_mask)
+        action = agent.select_action(state, training=training, action_mask=action_mask, env=env)
         next_state, reward, done, info = env.step(action)
         
         episode_reward += reward
@@ -223,8 +226,8 @@ def run_episode(env, agent, reward_computer, replay_buffer, episode_num, trainin
                         'a1': torch.LongTensor([a['a1'] for a in batch_actions]),
                         'a2': torch.LongTensor([a['a2'] for a in batch_actions]),
                         'a3': torch.LongTensor([a['a3'] for a in batch_actions]),
-                        'a2_atom': torch.LongTensor(np.array([a['a2_atom'] for a in batch_actions])),
-                        'a2_bond': torch.LongTensor(np.array([a['a2_bond'] for a in batch_actions])),
+                        'a2_motif_idx': torch.LongTensor(np.array([a['a2_motif_idx'] for a in batch_actions])),
+                        'a2_motif_attach': torch.LongTensor(np.array([a['a2_motif_attach'] for a in batch_actions])),
                     },
                     'rewards': torch.FloatTensor(batch_rewards),
                     'next_states': torch.FloatTensor(batch_next_states),
@@ -256,7 +259,7 @@ def train(num_episodes=NUM_EPISODES, resume_from=None, batch_size_sac=BATCH_SIZE
     torch.manual_seed(SEED)
     
     # Load Stage 1 components
-    hes_model, motif_vocab, shape_vocab, shape_templates, property_scaler = load_stage1_components()
+    hes_model, motif_vocab, shape_vocab, shape_templates, shape_to_motifs, property_scaler = load_stage1_components()
     
     # Initialize Stage 2 components
     env, agent, replay_buffer, reward_computer = initialize_training(
@@ -264,6 +267,7 @@ def train(num_episodes=NUM_EPISODES, resume_from=None, batch_size_sac=BATCH_SIZE
         motif_vocab,
         shape_vocab,
         shape_templates,
+        shape_to_motifs,
         property_scaler,
         target=target,
         warmup_episodes=warmup_episodes,
