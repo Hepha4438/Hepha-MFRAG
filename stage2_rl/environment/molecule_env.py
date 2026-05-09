@@ -173,9 +173,34 @@ class MoleculeEnv(gym.Env):
         Returns:
             obs: Initial state (HES encoding)
         """
+        # --- CURRICULUM LEARNING FOR SCAFFOLDS ---
         if initial_smiles is None:
             import random
-            initial_smiles = random.choice(STARTING_SCAFFOLDS)
+            
+            # Ensure STARTING_SCAFFOLDS is a list
+            total_scaffolds = len(STARTING_SCAFFOLDS)
+            
+            # Define curriculum schedule:
+            # Start with 5 basic scaffolds. Expand the pool gradually.
+            base_pool_size = 5
+            
+            # Add 25 new scaffolds every 10,000 episodes
+            # Adjust these numbers based on your total training length
+            episodes_per_expansion = 7500
+            scaffolds_per_expansion = 25
+            
+            if hasattr(self, 'current_episode_num'):
+                expansions = self.current_episode_num // episodes_per_expansion
+                current_pool_size = base_pool_size + (expansions * scaffolds_per_expansion)
+            else:
+                current_pool_size = base_pool_size
+                
+            # Clamp pool size to the maximum available
+            current_pool_size = min(current_pool_size, total_scaffolds)
+            
+            # Select from the currently active curriculum pool
+            active_scaffolds = STARTING_SCAFFOLDS[:current_pool_size]
+            initial_smiles = random.choice(active_scaffolds)
         
         self.current_molecule = Chem.MolFromSmiles(initial_smiles) if initial_smiles else None
         
@@ -280,41 +305,84 @@ class MoleculeEnv(gym.Env):
         obs = self._get_hes_encoding()
         
         return obs, reward, done, info   
+
     def _extract_warmup_actions(self, a2: int, n_scaffold_atoms: int, action: Dict[str, Any]):
         """
-        Extract ground-truth motif idx and attach node for the chosen shape to provide perfect labels.
-        Forces the 'action' dict to reflect a valid motif matching the joint atom.
+        FAST ORACLE WARMUP: Đóng vai trò là 'Teacher'.
+        Tìm kiếm một hành động hợp lệ 100% (qua ải Sanitize) và giữ QED tốt nhất.
         """
         if not self.is_training or self.current_episode_num >= self.warmup_episodes:
             return
             
-        a1 = action.get('a1', 0)
-        if a1 >= self.scaffold_molecule.GetNumAtoms():
+        # 1. Đảm bảo a1 là một điểm nối hợp lệ
+        valid_pts = self._get_valid_attachment_points()
+        if not valid_pts:
             return
+            
+        a1 = action.get('a1', 0)
+        if a1 not in valid_pts:
+            import random
+            a1 = random.choice(valid_pts)
+            action['a1'] = a1  # Sửa lại a1 cho Agent
             
         joint_atom = self.scaffold_molecule.GetAtomWithIdx(a1)
         joint_element = joint_atom.GetSymbol()
         
-        if a2 not in self.shape_to_motifs:
-            return
-            
-        candidate_motifs = self.shape_to_motifs[a2]
+        best_qed_diff = -float('inf')
+        best_action = None
+        current_qed = QED.qed(self.scaffold_molecule)
         
-        # Find first motif that matches joint_element
-        valid_idx = -1
-        valid_attach = -1
-        for idx, motif in enumerate(candidate_motifs):
-            for node_idx, symbol in enumerate(motif['atoms']):
-                if symbol == joint_element:
-                    valid_idx = idx
-                    valid_attach = node_idx
-                    break
-            if valid_idx != -1:
-                break
-                
-        if valid_idx != -1:
-            action['a2_motif_idx'] = valid_idx
-            action['a2_motif_attach'] = valid_attach
+        import random
+        # Lấy ngẫu nhiên 15 shapes để thử nghiệm (giữ cho tốc độ train cực nhanh)
+        shapes_to_test = random.sample(list(self.shape_to_motifs.keys()), min(15, len(self.shape_to_motifs)))
+        # Ưu tiên test cả cái shape a2 mà Agent vừa đoán
+        if a2 in self.shape_to_motifs and a2 not in shapes_to_test:
+            shapes_to_test[0] = a2
+
+        for test_a2 in shapes_to_test:
+            candidate_motifs = self.shape_to_motifs[test_a2]
+            for idx, motif in enumerate(candidate_motifs):
+                for node_idx, symbol in enumerate(motif['atoms']):
+                    if symbol == joint_element:
+                        motif_mol = Chem.MolFromSmiles(motif['smiles'])
+                        if motif_mol is None: continue
+                        
+                        try:
+                            # Mô phỏng ghép nối (Dry-run)
+                            combined = Chem.CombineMols(self.scaffold_molecule, motif_mol)
+                            rw_mol = Chem.RWMol(combined)
+                            offset = self.scaffold_molecule.GetNumAtoms()
+                            
+                            for bond in motif_mol.GetBonds():
+                                if bond.GetBeginAtomIdx() == node_idx:
+                                    rw_mol.AddBond(a1, offset + bond.GetEndAtomIdx(), bond.GetBondType())
+                                elif bond.GetEndAtomIdx() == node_idx:
+                                    rw_mol.AddBond(a1, offset + bond.GetBeginAtomIdx(), bond.GetBondType())
+                                    
+                            rw_mol.RemoveAtom(offset + node_idx)
+                            new_mol = rw_mol.GetMol()
+                            
+                            # CỬA ẢI TỬ THẦN: Phải qua được Sanitize của RDKit
+                            Chem.SanitizeMol(new_mol)
+                            
+                            # Tính điểm QED (cực nhanh, không cần qua mạng Neural Network)
+                            new_qed = QED.qed(new_mol)
+                            qed_diff = new_qed - current_qed
+                            
+                            # Lưu lại lựa chọn tốt nhất
+                            if qed_diff > best_qed_diff:
+                                best_qed_diff = qed_diff
+                                best_action = (test_a2, idx, node_idx)
+                        except:
+                            # Lỗi hóa trị hoặc 3D -> Bỏ qua mảnh này ngay lập tức
+                            continue
+                            
+        # Ghi đè hành động hoàn hảo vào action dict để Agent học theo
+        # Chấp nhận QED giảm nhẹ (>-0.1) vì thêm motif thường làm phân tử to ra
+        if best_action is not None and best_qed_diff > -0.15:
+            action['a2'] = best_action[0]
+            action['a2_motif_idx'] = best_action[1]
+            action['a2_motif_attach'] = best_action[2]
 
     def _phase_A1(self, a1: int, a2: int, a3: int):
         """
@@ -661,7 +729,7 @@ class MoleculeEnv(gym.Env):
             if pt < MAX_ATOMS_PER_MOLECULE:
                 a1_mask_arr[pt] = 1.0
         # Stop action is index MAX_ATOMS_PER_MOLECULE
-        if len(self.generated_motifs) >= 1 or len(valid_points) == 0:
+        if len(self.generated_motifs) >= 2 or len(valid_points) == 0:
             a1_mask_arr[-1] = 1.0
         else:
             a1_mask_arr[-1] = 0.0
