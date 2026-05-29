@@ -43,13 +43,7 @@ Hepha-MFRAG/
 
 **Environment Setup:** The system requires a `conda` environment with essential chemistry (`rdkit`) and AI libraries (`pytorch`, `torch-geometric`, `gym`) installed. The recommended environment name is `baselines`.
 
-### 1. Activate Environment
-
-```bash
-conda activate baselines
-```
-
-### 2. Data Preprocessing & Vocabulary Construction (Stage 0)
+### 1. Data Preprocessing & Vocabulary Construction (Stage 0)
 
 This process analyzes the ZINC250k molecular dataset: extracting Scaffolds/Motifs, building the topology vocabulary, and fitting the Property Scaler to standardize RL reward curves.
 
@@ -65,19 +59,16 @@ python processing/run_pipeline.py
 *To individually update the shape-to-motifs mapping dictionary, run:*
 `python processing/05_build_shape_to_motifs.py`
 
-### 3. Reinforcement Learning Training (Stage 2)
+### 2. Reinforcement Learning Training (Stage 2)
 
 The core Agent training loop. The `MoleculeEnv` is equipped with a **Curriculum Learning** algorithm (gradually increasing allowed starting scaffolds) coupled with an **Autoregressive SAC** (Soft Actor-Critic with valency-aware masking).
 
 ```bash
 # Start Agent Training with a specified warmup schedule
-python stage2_rl/train.py --warmup-episodes 1000
-
-# Quick test run (1 episode)
-conda run -n baselines python stage2_rl/train.py --warmup-episodes 1000 --episodes 1
+python stage2_rl/train.py
 ```
 
-### 4. Evaluation 
+### 3. Evaluation 
 
 Generate novel molecules fine-tuned for a specific Target Protein and log the benchmarks to `evaluation_results.csv`.
 
