@@ -1,5 +1,5 @@
 # Hepha-MFRAG
-*(Hierarchical Encoding Strategy + Motif-based Fragment RL)*
+*(Harmonized Embedding Space + Motif-based Fragment RL)*
 
 **Hepha-MFRAG** is a groundbreaking Artificial Intelligence (AI) system in the field of **De Novo Drug Design**. By combining the power of *Graph Neural Networks (GNNs)* to embed molecular topologies and *Reinforcement Learning (RL)* for multi-objective optimization, the system autonomously generates novel molecules (ligands) that satisfy three core objectives: 
 1) High binding affinity to a target protein pocket (PARP1, JAK2, BRAF, 5HT1B, FA7).
@@ -24,10 +24,10 @@ Hepha-MFRAG/
 │   ├── 04_build_graphs.py
 │   ├── 05_build_shape_to_motifs.py
 │   └── run_pipeline.py         # Automates the entire preprocessing pipeline
-├── stage1_hes/                 # Stage 1: Representation Learning (GNN)
-│   ├── checkpoints/            # Pre-trained weights for HES and Property Scaler (scaler.pkl)
-│   ├── training/               # Code for training the HES Graph (Encoder_G and Encoder_Sc)
-│   └── models/                 # HES Model neural network architectures
+├── stage1_hes/                 # Stage 1: Representation Learning (Harmonized Embedding Space)
+│   ├── checkpoints/            # Pre-trained weights for the HES model and Property Scaler (scaler.pkl)
+│   ├── training/               # Training loop for the dual GNN encoders (Encoder_G and Encoder_Sc)
+│   └── models/                 # Neural network architectures for HES
 ├── stage2_rl/                  # Stage 2: RL Optimization via Soft Actor-Critic (SAC)
 │   ├── environment/            # MDP definition (molecule_env.py) managing Curriculum Scaffolds & Motif Merging
 │   ├── models/                 # Actor/Critic architecture and Autoregressive Masking mechanism
