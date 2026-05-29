@@ -1,4 +1,4 @@
-# Hepha-MFRAG 🧬💊
+# Hepha-MFRAG
 *(Hierarchical Encoding Strategy + Motif-based Fragment RL)*
 
 **Hepha-MFRAG** is a groundbreaking Artificial Intelligence (AI) system in the field of **De Novo Drug Design**. By combining the power of *Graph Neural Networks (GNNs)* to embed molecular topologies and *Reinforcement Learning (RL)* for multi-objective optimization, the system autonomously generates novel molecules (ligands) that satisfy three core objectives: 
@@ -8,7 +8,7 @@
 
 ---
 
-## 🗂 Repository Structure
+## Repository Structure
 
 The project is highly modularized into distinct subsystems and pipeline stages:
 
@@ -34,13 +34,12 @@ Hepha-MFRAG/
 │   ├── training/               # Multi-objective Reward computation (docking, QED, SA) (rewards.py)
 │   ├── train.py                # Standard training loop script
 │   └── evaluate.py             # Inference and benchmarking after training
-├── rl_graph_generation/        # Baseline environment for comparison / auxiliary code
 └── root scripts                # Auxiliary root scripts (download_zinc_kaggle.py, train_surrogates.py, final_evaluation.py)
 ```
 
 ---
 
-## 🚀 Installation & Usage
+## Installation & Usage
 
 **Environment Setup:** The system requires a `conda` environment with essential chemistry (`rdkit`) and AI libraries (`pytorch`, `torch-geometric`, `gym`) installed. The recommended environment name is `baselines`.
 
@@ -92,7 +91,7 @@ python final_evaluation.py
 
 ---
 
-## 🧠 Key Technical Features
+## Key Technical Features
 
 *   **Autoregressive Action Selection**: The RL Agent constructs molecules via a rigorous 3-step hierarchical logic: Select Attachment Point $\rightarrow$ Select Motif Shape $\rightarrow$ Select Motif Attachment Node to seamlessly merge graphs.
 *   **Valency Masking Validation**: RDKit valency limits are natively integrated into the categorical Logit Masking (Masking invalid actions with $-1e^9$). The agent mathematically cannot generate chemically invalid bonds.
